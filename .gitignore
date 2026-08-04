@@ -1,0 +1,12 @@
+/target/
+/lib/simplemarkdown-daemon
+/lib/simplemarkdown-daemon.exe
+*.log
+*.swp
+*.swo
+.DS_Store
+
+# Artifacts written by the vendored simplecore test suite on failure.
+tests/*-errors.log
+tests/*divergence.log
+tests/core-not-executable

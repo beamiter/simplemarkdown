@@ -1,0 +1,46 @@
+[package]
+name = "simplemarkdown"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Terminal Markdown preview renderer for Vim 9"
+license = "MIT"
+repository = "https://github.com/beamiter/simplemarkdown"
+readme = "README.md"
+keywords = ["vim", "markdown", "preview", "terminal"]
+categories = ["command-line-utilities", "text-editors"]
+publish = false
+
+[[bin]]
+name = "simplemarkdown-daemon"
+path = "src/simplemarkdown/simplemarkdown_daemon.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = [
+  "io-std",
+  "io-util",
+  "macros",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
+# default-features = false drops the html renderer and getopts; the daemon only
+# ever walks the event stream.
+pulldown-cmark = { version = "0.13", default-features = false }
+# regex-fancy keeps the build pure Rust: the onig backend needs a C toolchain,
+# which would break `cargo install` on the machines this plugin targets.
+syntect = { version = "5", default-features = false, features = [
+  "default-syntaxes",
+  "parsing",
+  "regex-fancy",
+] }
+unicode-width = "0.2"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

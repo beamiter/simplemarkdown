@@ -1,0 +1,430 @@
+*simplemarkdown.txt*  Markdown preview rendered in Vim by a Rust daemon
+
+Author:   beamiter
+License:  MIT
+Requires: Vim 9.0 with +job, +channel and +textprop; Rust 1.88 to build
+
+==============================================================================
+CONTENTS                                              *simplemarkdown-contents*
+
+    1. Introduction ................ |simplemarkdown-introduction|
+    2. Installation ................ |simplemarkdown-installation|
+    3. Usage ....................... |simplemarkdown-usage|
+    4. Commands .................... |simplemarkdown-commands|
+    5. Mappings .................... |simplemarkdown-mappings|
+    6. Configuration ............... |simplemarkdown-configuration|
+    7. Highlighting ................ |simplemarkdown-highlighting|
+    8. Supported Markdown .......... |simplemarkdown-markdown|
+    9. Architecture ................ |simplemarkdown-architecture|
+   10. Troubleshooting ............. |simplemarkdown-troubleshooting|
+
+==============================================================================
+1. INTRODUCTION                                   *simplemarkdown-introduction*
+
+SimpleMarkdown renders a Markdown buffer into a second Vim window, laid out
+and styled as prose rather than shown as source.  Headings get rules, lists
+get bullets, quotes get bars, tables get boxes with aligned columns, and
+fenced code blocks are drawn in a labelled frame with syntax highlighting.
+
+No browser, no HTTP server, no external viewer.  The preview is an ordinary
+Vim buffer, so it works over SSH, inside tmux, and in any terminal Vim runs
+in — and the cursor in the source follows the cursor in the preview.
+
+The layout work happens in a Rust daemon: CommonMark parsing with
+pulldown-cmark, display-width-correct line breaking with unicode-width
+(so CJK text wraps at the right column), and syntax highlighting with syntect.
+The daemon returns rows plus text-property spans; Vim only has to place them.
+
+==============================================================================
+2. INSTALLATION                                   *simplemarkdown-installation*
+
+With vim-plug: >
+
+    Plug 'beamiter/simplemarkdown', {'do': './install.sh'}
+<
+The plugin needs its backend compiled once: >
+
+    cd ~/.vim/plugged/simplemarkdown
+    ./install.sh
+<
+On Windows, run `install.ps1` instead.  `install.sh` builds with `--locked`,
+runs the binary's `--self-test`, and only then moves it into `lib/`, so a
+build that cannot lay out its own documentation never replaces a working one.
+
+The plugin finds the backend by searching, in order: |g:simplemarkdown_daemon_path|,
+`lib/` under every 'runtimepath' entry, `target/release` and `target/debug`
+under the same (a developer convenience), and finally $PATH.
+
+==============================================================================
+3. USAGE                                                 *simplemarkdown-usage*
+
+Open a Markdown file and run: >
+
+    :SimpleMarkdown
+<
+A preview window opens beside it and re-renders as you type, debounced by
+|g:simplemarkdown_debounce| milliseconds.  Move the cursor in the source and
+the preview scrolls to the matching row; the mapping is per source line, not
+per block, so a cursor in the middle of a long paragraph lands in the middle
+of the rendered paragraph.
+
+There is one preview per tab page.  Switching to another Markdown buffer in
+the same tab re-points the existing preview at it rather than opening a
+second one.
+
+==============================================================================
+4. COMMANDS                                           *simplemarkdown-commands*
+
+                                                              *:SimpleMarkdown*
+:SimpleMarkdown         Toggle the preview for the current tab page.
+
+                                                          *:SimpleMarkdownOpen*
+:SimpleMarkdownOpen     Open the preview.  Does nothing if one is already open.
+
+                                                         *:SimpleMarkdownClose*
+:SimpleMarkdownClose    Close the preview.
+
+                                                       *:SimpleMarkdownRefresh*
+:SimpleMarkdownRefresh  Re-render now, skipping the debounce.  Useful after an
+                        edit made by a plugin, which may not fire |TextChanged|.
+
+                                                         *:SimpleMarkdownFocus*
+:SimpleMarkdownFocus    Move the cursor into the preview window, opening one
+                        first if needed.
+
+                                                           *:SimpleMarkdownToc*
+:SimpleMarkdownToc      Show the document's headings in a popup menu; choosing
+                        one moves both windows to it.  Falls back to the
+                        location list when +popupwin is missing.
+
+                                                        *:SimpleMarkdownResize*
+:SimpleMarkdownResize [{columns}]
+                        Resize the preview window.  With no argument, re-apply
+                        the configured width — handy after the terminal itself
+                        has been resized.
+
+                                                         *:SimpleMarkdownStyle*
+:SimpleMarkdownStyle [unicode|ascii]
+                        Switch decoration alphabets and re-render.  With no
+                        argument, print the current one.  See
+                        |g:simplemarkdown_style|.
+
+                                                       *:SimpleMarkdownRestart*
+:SimpleMarkdownRestart  Restart the backend and clear the crash-loop breaker.
+
+                                                        *:SimpleMarkdownHealth*
+:SimpleMarkdownHealth   Report on the backend: where it was found, whether it
+                        is running, the negotiated protocol version and
+                        capabilities, restart counts and the last render time.
+
+                                                           *:SimpleMarkdownLog*
+:SimpleMarkdownLog      Open the backend log in a scratch buffer.  The log is a
+                        ring buffer that is always recording, so the interesting
+                        startup and crash entries are there even if
+                        |g:simplemarkdown_debug| was off at the time.
+
+                                                         *:SimpleMarkdownDebug*
+:SimpleMarkdownDebug    Echo a dictionary of internal state.
+
+==============================================================================
+5. MAPPINGS                                           *simplemarkdown-mappings*
+
+Global, installed only if the key is still free and
+|g:simplemarkdown_set_default_mapping| is on: >
+
+    <leader>md      toggle the preview
+<
+Plugs, for your own bindings: >
+
+    <Plug>(simplemarkdown-toggle)
+    <Plug>(simplemarkdown-focus)
+    <Plug>(simplemarkdown-toc)
+<
+Inside the preview window, unless |g:simplemarkdown_default_mappings| is off: >
+
+    q       close the preview
+    r       re-render now
+    <CR>    follow the link under the cursor; with no link, jump the source
+            window to the line this row came from
+    gx      follow the link on this row
+    gO      show the table of contents
+    ]]      next heading
+    [[      previous heading
+<
+A link to `http:`, `https:`, `ftp:` or `mailto:` is handed to
+`netrw#BrowseX()`, or to `xdg-open`/`open` if netrw is not loaded.  A relative
+link is resolved against the source file's directory and opened in the source
+window.  A bare `#anchor` jumps to that heading.
+
+==============================================================================
+6. CONFIGURATION                                 *simplemarkdown-configuration*
+
+                                                       *g:simplemarkdown_width*
+Preview window width in columns.  0 means half the Vim window.
+Default: 0
+
+                                                   *g:simplemarkdown_min_width*
+Floor for the computed width.
+Default: 30
+
+                                              *g:simplemarkdown_max_text_width*
+Cap on the text column inside the preview, independent of the window width.
+Prose is hard to read at 200 columns even when the window offers them; set
+this to 80 or 100 and the window can stay as wide as you like.  0 disables it.
+Default: 0
+
+                                                        *g:simplemarkdown_side*
+`'right'` or `'left'`.
+Default: 'right'
+
+                                                    *g:simplemarkdown_debounce*
+Milliseconds to wait after the last change before re-rendering.
+Default: 120
+
+                                                       *g:simplemarkdown_style*
+`'unicode'` draws with box-drawing characters and geometric bullets.
+`'ascii'` draws with `+-|#*` only.  Use ASCII if your terminal treats
+East Asian Ambiguous width characters as double width — box-drawing lives in
+that category, and a terminal that renders it two columns wide will misalign
+every table and code frame.
+Default: 'unicode'
+
+                                                      *g:simplemarkdown_syntax*
+Syntax-highlight fenced code blocks.  Turning this off makes the first render
+of a document containing code noticeably faster, because the syntax
+definitions are then never loaded.
+Default: 1
+
+                                                        *g:simplemarkdown_wrap*
+Reflow prose to the preview width.  With this off, each paragraph becomes one
+long row and the preview scrolls horizontally.
+Default: 1
+
+                                                   *g:simplemarkdown_code_wrap*
+Wrap over-long code lines onto a continuation row marked with `⤷`.  With this
+off they are clipped at the frame edge and marked with `›`.
+Default: 1
+
+                                                   *g:simplemarkdown_show_urls*
+Append a link's target after its text, dimmed: `docs (./x.md)`.
+Default: 0
+
+                                                 *g:simplemarkdown_frontmatter*
+Render a YAML or TOML front-matter block as a labelled code frame.  With this
+off, front matter is omitted from the preview entirely.
+Default: 1
+
+                                                   *g:simplemarkdown_tab_width*
+Columns a tab expands to inside code blocks.
+Default: 4
+
+                                                 *g:simplemarkdown_sync_scroll*
+Scroll the preview to follow the source cursor.
+Default: 1
+
+                                                   *g:simplemarkdown_sync_back*
+Also move the source cursor when the cursor moves inside the preview.  Off by
+default: it makes browsing the preview move the file you are editing.
+Default: 0
+
+                                                   *g:simplemarkdown_auto_open*
+Open a preview automatically whenever a Markdown buffer is entered.
+Default: 0
+
+                                                  *g:simplemarkdown_auto_close*
+Close the preview when the buffer it was previewing goes away and no other
+Markdown buffer in the tab page can take over.
+Default: 1
+
+                                                   *g:simplemarkdown_filetypes*
+Filetypes treated as Markdown.  A file with no filetype at all is still
+previewed if its name ends in a Markdown extension.
+Default: ['markdown', 'markdown.pandoc', 'pandoc', 'rmd', 'vimwiki',
+          'ghmarkdown']
+
+                                            *g:simplemarkdown_default_mappings*
+Install the buffer-local mappings listed under |simplemarkdown-mappings|.
+Default: 1
+
+                                        *g:simplemarkdown_set_default_mapping*
+Install the global `<leader>md` mapping.
+Default: 1
+
+                                                 *g:simplemarkdown_daemon_path*
+Explicit path to `simplemarkdown-daemon`, overriding the search.
+Default: ''
+
+                                                *g:simplemarkdown_auto_restart*
+Restart the backend automatically if it dies, with exponential backoff and a
+crash-loop breaker.
+Default: 1
+
+                                                       *g:simplemarkdown_debug*
+Echo backend log entries as they happen.  The log is recorded either way; see
+|:SimpleMarkdownLog|.
+Default: 0
+
+==============================================================================
+7. HIGHLIGHTING                                   *simplemarkdown-highlighting*
+
+Every element is drawn with a text property whose highlight group is
+`SimpleMarkdown` followed by the element name.  All of them are linked with
+`highlight default link`, so a colour scheme or your vimrc can override any of
+them: >
+
+    highlight link SimpleMarkdownH1 Todo
+    highlight SimpleMarkdownCodeBlock guibg=#1c1c1c
+<
+Structure: >
+
+    SimpleMarkdownH1 .. SimpleMarkdownH6   heading text
+    SimpleMarkdownHeadMark                 the marker before a heading
+    SimpleMarkdownHeadRule                 the rule under H1 and H2
+    SimpleMarkdownRule                     a thematic break
+    SimpleMarkdownBullet                   • ◦ ▪
+    SimpleMarkdownNumber                   1. 2. 3.
+    SimpleMarkdownTask                     ☐
+    SimpleMarkdownTaskDone                 ☑
+    SimpleMarkdownTerm                     a definition-list term
+<
+Inline: >
+
+    SimpleMarkdownBold
+    SimpleMarkdownItalic
+    SimpleMarkdownBoldItalic
+    SimpleMarkdownStrike
+    SimpleMarkdownCode                     `inline code`
+    SimpleMarkdownLink                     link text
+    SimpleMarkdownLinkUrl                  the target, with show_urls on
+    SimpleMarkdownImage
+    SimpleMarkdownFootnote                 [1]
+    SimpleMarkdownHtml                     raw HTML, inline or block
+<
+Blocks: >
+
+    SimpleMarkdownQuote                    quoted prose
+    SimpleMarkdownQuoteBar                 the ▏ bar
+    SimpleMarkdownAlertNote                > [!NOTE]
+    SimpleMarkdownAlertTip                 > [!TIP]
+    SimpleMarkdownAlertImportant           > [!IMPORTANT]
+    SimpleMarkdownAlertWarning             > [!WARNING]
+    SimpleMarkdownAlertCaution             > [!CAUTION]
+    SimpleMarkdownCodeBlock                the code frame's background
+    SimpleMarkdownCodeBorder               the frame
+    SimpleMarkdownCodeLang                 the language label
+    SimpleMarkdownCodeCont                 the ⤷ continuation marker
+    SimpleMarkdownTableBorder
+    SimpleMarkdownTableHead
+<
+Code inside a fence is highlighted with sixteen coarse groups rather than with
+syntect's own colours.  Emitting RGB from a theme would look wrong against
+every terminal palette that theme was not authored for; linking to the groups
+your colour scheme already defines cannot: >
+
+    SimpleMarkdownSynKeyword      -> Keyword
+    SimpleMarkdownSynString       -> String
+    SimpleMarkdownSynComment      -> Comment
+    SimpleMarkdownSynNumber       -> Number
+    SimpleMarkdownSynBoolean      -> Boolean
+    SimpleMarkdownSynType         -> Type
+    SimpleMarkdownSynFunction     -> Function
+    SimpleMarkdownSynConstant     -> Constant
+    SimpleMarkdownSynOperator     -> Operator
+    SimpleMarkdownSynPunct        -> Delimiter
+    SimpleMarkdownSynVariable     -> Identifier
+    SimpleMarkdownSynProperty     -> Identifier
+    SimpleMarkdownSynPreProc      -> PreProc
+    SimpleMarkdownSynTag          -> Tag
+    SimpleMarkdownSynEscape       -> SpecialChar
+    SimpleMarkdownSynInvalid      -> Error
+<
+==============================================================================
+8. SUPPORTED MARKDOWN                                 *simplemarkdown-markdown*
+
+CommonMark, plus the GitHub extensions that matter in practice:
+
+    - ATX and Setext headings
+    - paragraphs, hard breaks, thematic breaks
+    - bullet, ordered and task lists, nested to any depth, tight and loose
+    - block quotes, nested, and GFM alerts (`> [!NOTE]` and friends)
+    - fenced and indented code blocks, with syntect highlighting
+    - tables, with per-column alignment and automatic column fitting
+    - links, autolinks, images, reference links
+    - footnotes, numbered consistently between reference and definition
+    - definition lists
+    - strikethrough, superscript, subscript
+    - inline and block HTML, shown as dimmed source
+    - YAML and TOML front matter
+
+Ordered list markers are right-aligned to the widest number in the list, so
+`9.` and `10.` put their text in the same column.  Table columns that do not
+all fit are shrunk in proportion to what they asked for, so one prose column
+does not squeeze three short ones to nothing.
+
+Not rendered: images (the alt text and a marker are shown instead), LaTeX
+maths (shown verbatim as code), and Mermaid diagrams (shown as a code block).
+A terminal cannot do better with any of them.
+
+==============================================================================
+9. ARCHITECTURE                                   *simplemarkdown-architecture*
+
+The plugin talks to `simplemarkdown-daemon` over JSON lines on stdin/stdout,
+supervised by simplecore — the same daemon supervisor the rest of the simple*
+suite uses.  simplecore owns process lifetime, generation-guarded callbacks,
+exponential-backoff restarts, the crash-loop breaker and request/reply
+correlation with timeouts.
+
+A render request carries the whole buffer, the preview window's width, and the
+current options.  The reply carries:
+
+    - one row per preview line: its text, its text-property spans as
+      [column, length, class] with 1-based byte columns, and the 1-based
+      source line it came from
+    - the table of contents, with both source line and preview row
+    - every link, with its row, column, length and target
+
+Vim replaces the buffer's lines, groups the property spans by class, and adds
+each group with one |prop_add_list()| call.  A document with tens of thousands
+of spans therefore costs about fifty calls, not tens of thousands.
+
+Two details worth knowing if you are reading the source:
+
+Renders are cancellable.  A keystroke burst queues one render per debounce
+window; each new one cancels the last, both in Vim's pending-request table and
+in the daemon, which drops the work before starting it.
+
+A render is discarded if the window has been resized since it was requested.
+Layout is width-specific; a reply for the old width would show a ragged right
+edge until the next keystroke.
+
+==============================================================================
+10. TROUBLESHOOTING                             *simplemarkdown-troubleshooting*
+
+"daemon simplemarkdown-daemon not found"
+    The backend has not been built.  Run `./install.sh` in the plugin
+    directory, then |:SimpleMarkdownRestart|.
+
+Tables and code frames are misaligned
+    Your terminal renders East Asian Ambiguous width characters as double
+    width.  Set >
+        let g:simplemarkdown_style = 'ascii'
+<   or configure the terminal to treat them as single width.
+
+Nothing happens on :SimpleMarkdown
+    The buffer's filetype is not in |g:simplemarkdown_filetypes| and its name
+    does not look like Markdown.  Check with `:set filetype?`.
+
+A code block is not highlighted
+    syntect does not bundle a definition for every language; `toml` and `vim`
+    are two it lacks.  The code is still shown, just uncoloured.
+
+The preview stops updating
+    Run |:SimpleMarkdownHealth|.  If the crash-loop breaker is open, the
+    backend died repeatedly; |:SimpleMarkdownLog| has the reason and
+    |:SimpleMarkdownRestart| clears the breaker.
+
+Editing a very large document does not live-update
+    Above 20000 lines the preview stops re-rendering on every keystroke and
+    updates on write and on |:SimpleMarkdownRefresh| instead.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:

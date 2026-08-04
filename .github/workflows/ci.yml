@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+
+  # The crate declares a minimum supported Rust version; a dependency bump or a
+  # newly used language feature can quietly break it, because every other job
+  # runs on stable.  Keep the toolchain here in step with rust-version in
+  # Cargo.toml.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Build on the declared minimum supported Rust
+        run: cargo check --all-targets --locked
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+
+      - name: Renderer self-test
+        run: ./target/release/simplemarkdown-daemon --self-test
+
+      - name: Verify the daemon capability handshake
+        run: |
+          response="$(printf '%s\n' '{"type":"ping","id":1}' \
+            | ./target/release/simplemarkdown-daemon)"
+          grep -F '"type":"pong"' <<<"$response"
+          grep -F '"protocol_version":1' <<<"$response"
+          grep -F '"render":true' <<<"$response"
+
+      - name: Install Vim
+        run: sudo apt-get update && sudo apt-get install --yes vim
+
+      # An unregistered text-property type is a hard prop_add() error inside a
+      # channel callback — the worst place to discover a mismatch.
+      - name: Rust and Vim agree on the text-property classes
+        run: make check-classes
+
+      - name: Compile every Vim9 def (lazy compilation hides cold-branch errors)
+        run: make defcompile
+
+      - name: simplecore supervisor regression suite
+        run: make vim-core
+
+      - name: End-to-end preview smoke test
+        run: make test-vim
