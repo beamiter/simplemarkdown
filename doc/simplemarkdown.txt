@@ -106,7 +106,8 @@ second one.
                                                          *:SimpleMarkdownStyle*
 :SimpleMarkdownStyle [unicode|ascii]
                         Switch decoration alphabets and re-render.  With no
-                        argument, print the current one.  See
+                        argument, cycle to the next one, so the command is
+                        worth binding to a single key.  See
                         |g:simplemarkdown_style|.
 
                                                        *:SimpleMarkdownRestart*

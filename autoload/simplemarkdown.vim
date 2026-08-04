@@ -1039,12 +1039,16 @@ enddef
 
 
 export def SetStyle(argument: string)
+  const styles = ['unicode', 'ascii']
   var wanted = trim(argument)
   if wanted ==# ''
-    echo printf('SimpleMarkdown style: %s', get(g:, 'simplemarkdown_style', 'unicode'))
-    return
+    # No argument cycles rather than reporting, matching :SimpleMinimapStyle.
+    # It is what makes a single key worth binding: printing the value you are
+    # already looking at is not an action.
+    var current = index(styles, get(g:, 'simplemarkdown_style', 'unicode'))
+    wanted = styles[current < 0 ? 0 : (current + 1) % len(styles)]
   endif
-  if index(['unicode', 'ascii'], wanted) < 0
+  if index(styles, wanted) < 0
     echohl ErrorMsg
     echom '[SimpleMarkdown] style must be "unicode" or "ascii".'
     echohl None

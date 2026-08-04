@@ -167,6 +167,14 @@ SimpleMarkdownStyle unicode
 call assert_true(s:Wait('index(s:PreviewLines(), "▌ Title") >= 0', 5000),
       \ 'the unicode style comes back')
 
+" No argument cycles, which is what makes the command worth a single key.
+SimpleMarkdownStyle
+call assert_equal('ascii', g:simplemarkdown_style, 'a bare :SimpleMarkdownStyle cycles')
+SimpleMarkdownStyle
+call assert_equal('unicode', g:simplemarkdown_style, 'and cycles back')
+call assert_true(s:Wait('index(s:PreviewLines(), "▌ Title") >= 0', 5000),
+      \ 'cycling re-renders')
+
 " ---------------------------------------------------------------- re-render ---
 
 " An edit must reach the preview without the window scrolling back to the top

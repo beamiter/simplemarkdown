@@ -25,6 +25,19 @@ test-daemon: build
 	printf '%s\n' '{"type":"ping","id":1}' \
 		| ./target/release/simplemarkdown-daemon \
 		| grep -qF '"type":"pong"'
+	@# A piped client closes stdin as soon as it has written, and every queued
+	@# reply must still reach stdout.  Losing them was a race between stdin EOF
+	@# and the writer task, so one run proves nothing: repeat it.
+	@for run in 1 2 3 4 5 6 7 8; do \
+		got="$$(printf '%s\n' \
+			'{"type":"ping","id":1}' \
+			'{"type":"render","id":2,"lines":["# heading"],"width":40}' \
+			'{"type":"render","id":3,"lines":["- item"],"width":40}' \
+			| ./target/release/simplemarkdown-daemon | wc -l)"; \
+		test "$$got" -eq 3 \
+			|| { echo "run $$run: $$got replies, want 3 (a reply was lost at exit)"; exit 1; }; \
+	done
+	@echo "daemon: replies survive stdin EOF"
 
 # The Vim side registers one text-property type per class the daemon may emit.
 # A class present in Rust but missing in Vim is a hard prop_add() error inside

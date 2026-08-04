@@ -115,7 +115,7 @@ fn run_daemon() -> std::process::ExitCode {
 
 async fn serve() -> std::io::Result<()> {
     let (out_tx, out_rx) = mpsc::channel::<String>(256);
-    tokio::spawn(stdout_writer(out_rx));
+    let writer = tokio::spawn(stdout_writer(out_rx));
 
     // Requests the editor has withdrawn.  Checked twice — when the render is
     // picked up and again when it finishes — because a document large enough
@@ -212,6 +212,19 @@ async fn serve() -> std::io::Result<()> {
             }
         }
     }
+
+    // Stdin is closed, but replies may still be queued, and a render spawned a
+    // moment ago may not have produced its own yet.  Returning here drops the
+    // runtime, which cancels the writer task mid-flight and loses whatever it
+    // had not written — invisible to the plugin, whose stdin stays open for the
+    // life of the session, but fatal to anything that pipes one request in and
+    // reads the answer out.
+    //
+    // Dropping our sender lets the writer finish once the last in-flight render
+    // has dropped its clone.  The timeout is a backstop: a wedged render must
+    // not keep the process alive for ever.
+    drop(out_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
     Ok(())
 }
 

@@ -41,6 +41,12 @@ jobs:
           grep -F '"protocol_version":1' <<<"$response"
           grep -F '"render":true' <<<"$response"
 
+      # A piped client closes stdin as soon as it has written; every queued
+      # reply must still reach stdout.  This was a race between stdin EOF and
+      # the writer task, so one run proves nothing.
+      - name: Replies survive stdin EOF
+        run: make test-daemon
+
       - name: Install Vim
         run: sudo apt-get update && sudo apt-get install --yes vim
 
