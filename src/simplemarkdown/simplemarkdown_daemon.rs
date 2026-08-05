@@ -13,8 +13,8 @@ mod protocol;
 mod render;
 mod table;
 
-use protocol::{Event, PROTOCOL_VERSION, RenderResult, Request};
-use std::collections::{BTreeMap, HashSet};
+use protocol::{Event, Line, PROTOCOL_VERSION, Patch, RenderResult, Request};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -43,7 +43,53 @@ fn capabilities() -> BTreeMap<&'static str, bool> {
         ("frontmatter", true),
         ("syntax", true),
         ("ascii", true),
+        ("incremental", true),
+        ("blocks", true),
     ])
+}
+
+// ─────────────────────────── session state ───────────────────────────
+
+/// What the client is holding for one preview window.
+struct Session {
+    /// The id of the render that produced `rows`.  Renders run concurrently on
+    /// the blocking pool and can finish out of order; an answer older than the
+    /// one already sent would describe a document the client has moved past.
+    id: u64,
+    rows: Vec<Line>,
+}
+
+/// A client that opens and closes previews all day should not grow the daemon
+/// without bound.  `forget` is the tidy path; this is the backstop.
+const MAX_SESSIONS: usize = 32;
+
+type Sessions = Arc<Mutex<HashMap<String, Session>>>;
+
+/// The rows that changed, as one splice.
+///
+/// Trimming the common prefix and then the common suffix finds exactly the run
+/// an edit touched: typing in a paragraph reflows that paragraph and nothing
+/// else, and both the rows above it and the rows below it compare equal.  It
+/// cannot describe two edits in different places as two hunks — it will span
+/// them — which is the right trade for a preview driven by a keystroke at a
+/// time.
+fn diff(prev: &[Line], next: &[Line]) -> Patch {
+    let mut head = 0;
+    while head < prev.len() && head < next.len() && prev[head] == next[head] {
+        head += 1;
+    }
+    let mut tail = 0;
+    while tail < prev.len() - head
+        && tail < next.len() - head
+        && prev[prev.len() - 1 - tail] == next[next.len() - 1 - tail]
+    {
+        tail += 1;
+    }
+    Patch {
+        from: head + 1,
+        del: prev.len() - head - tail,
+        lines: next[head..next.len() - tail].to_vec(),
+    }
 }
 
 fn main() -> std::process::ExitCode {
@@ -121,6 +167,7 @@ async fn serve() -> std::io::Result<()> {
     // picked up and again when it finishes — because a document large enough
     // to be worth cancelling is also large enough to be cancelled mid-flight.
     let cancelled: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
+    let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Some(line) = lines.next_line().await? {
@@ -158,9 +205,13 @@ async fn serve() -> std::io::Result<()> {
             Request::Cancel { id } => {
                 cancelled.lock().await.insert(id);
             }
+            Request::Forget { session } => {
+                sessions.lock().await.remove(&session);
+            }
             Request::Render(request) => {
                 let tx = out_tx.clone();
                 let cancelled = cancelled.clone();
+                let sessions = sessions.clone();
                 tokio::spawn(async move {
                     let id = request.id;
                     if cancelled.lock().await.remove(&id) {
@@ -169,6 +220,8 @@ async fn serve() -> std::io::Result<()> {
                     let started = Instant::now();
                     let width = request.width.max(8);
                     let opts = request.opts.clone();
+                    let key = request.session.clone();
+                    let incremental = request.incremental && !key.is_empty();
                     let source = request.lines.join("\n");
 
                     // Rendering a long document with syntax highlighting is
@@ -196,14 +249,60 @@ async fn serve() -> std::io::Result<()> {
                     if cancelled.lock().await.remove(&id) {
                         return;
                     }
+
+                    let total = output.lines.len();
+                    let (lines, patch) = match key.is_empty() {
+                        true => (Some(output.lines), None),
+                        false => {
+                            let mut sessions = sessions.lock().await;
+                            if let Some(session) = sessions.get(&key)
+                                && session.id > id
+                            {
+                                // A newer render for this window has already
+                                // been answered; this one describes a document
+                                // the client has moved past.
+                                return;
+                            }
+                            // Trimming to a patch is only worth the splice when
+                            // it is substantially smaller.  A rewrite of most of
+                            // the document is cheaper for the client to take as
+                            // a plain buffer replace.
+                            let patch = incremental
+                                .then(|| sessions.get(&key))
+                                .flatten()
+                                .map(|session| diff(&session.rows, &output.lines))
+                                .filter(|patch| patch.lines.len() * 2 <= total);
+                            if sessions.len() >= MAX_SESSIONS
+                                && !sessions.contains_key(&key)
+                                && let Some(evict) = sessions.keys().next().cloned()
+                            {
+                                sessions.remove(&evict);
+                            }
+                            sessions.insert(
+                                key.clone(),
+                                Session {
+                                    id,
+                                    rows: output.lines.clone(),
+                                },
+                            );
+                            match patch {
+                                Some(patch) => (None, Some(patch)),
+                                None => (Some(output.lines), None),
+                            }
+                        }
+                    };
+
                     send(
                         &tx,
                         Event::RenderResult(Box::new(RenderResult {
                             id,
                             width,
-                            lines: output.lines,
+                            total,
+                            lines,
+                            patch,
                             toc: output.toc,
                             links: output.links,
+                            blocks: output.blocks,
                             elapsed_ms: started.elapsed().as_millis(),
                         })),
                     )
@@ -274,8 +373,33 @@ fn self_test() -> Result<(), String> {
     let source = include_str!("../../tests/fixtures/kitchen-sink.md");
     let known: HashSet<&str> = classes::ALL.iter().copied().collect();
 
-    for width in [20usize, 40, 80, 120] {
-        let output = render::render(source, width, &protocol::Options::default());
+    // Every optional decoration is checked too: the gutter and the stripe both
+    // add columns and properties, and a layout that only holds together with
+    // them off is not one worth installing.
+    let variants = [
+        protocol::Options::default(),
+        protocol::Options {
+            code_numbers: true,
+            table_zebra: true,
+            show_urls: true,
+            ..protocol::Options::default()
+        },
+        // `wrap: false` is deliberately not here: it is documented to produce
+        // one long row per paragraph and scroll the window sideways, so the
+        // width invariant below does not apply to it.
+        protocol::Options {
+            unicode: false,
+            code_wrap: false,
+            code_numbers: true,
+            ..protocol::Options::default()
+        },
+    ];
+
+    for (width, opts) in [20usize, 40, 80, 120]
+        .into_iter()
+        .flat_map(|width| variants.iter().map(move |opts| (width, opts)))
+    {
+        let output = render::render(source, width, opts);
         if output.lines.is_empty() {
             return Err(format!("width {width}: the renderer produced nothing"));
         }
@@ -392,18 +516,92 @@ mod tests {
     #[test]
     fn events_serialise_with_the_short_field_names() {
         let output = render::render("# hi\n", 20, &protocol::Options::default());
+        let total = output.lines.len();
         let event = Event::RenderResult(Box::new(RenderResult {
             id: 1,
             width: 20,
-            lines: output.lines,
+            total,
+            lines: Some(output.lines),
+            patch: None,
             toc: output.toc,
             links: output.links,
+            blocks: output.blocks,
             elapsed_ms: 0,
         }));
         let encoded = serde_json::to_string(&event).expect("encodes");
         assert!(encoded.contains(r#""type":"render_result""#));
         assert!(encoded.contains(r#""t":"▌ hi""#), "{encoded}");
         assert!(encoded.contains(r#""p":[[1,3,"HeadMark"]"#), "{encoded}");
+        // A full reply carries no patch key at all, so the client can branch
+        // on its presence rather than on a null.
+        assert!(!encoded.contains(r#""patch""#), "{encoded}");
+    }
+
+    #[test]
+    fn a_patch_describes_only_the_rows_that_moved() {
+        let before = render::render(
+            "# title\n\npara one\n\npara two\n",
+            40,
+            &protocol::Options::default(),
+        );
+        let after = render::render(
+            "# title\n\npara one edited\n\npara two\n",
+            40,
+            &protocol::Options::default(),
+        );
+        let patch = diff(&before.lines, &after.lines);
+        assert_eq!(patch.lines.len(), 1, "one paragraph reflowed to one row");
+        assert_eq!(patch.del, 1);
+        assert!(patch.lines[0].text.contains("para one edited"));
+
+        // Applying it must reproduce the new document exactly — that is the
+        // whole contract with the Vim side.
+        let mut applied = before.lines;
+        applied.splice(patch.from - 1..patch.from - 1 + patch.del, patch.lines);
+        assert_eq!(applied, after.lines);
+    }
+
+    #[test]
+    fn a_patch_can_be_a_pure_insertion_or_deletion() {
+        let short = render::render("a\n\nb\n", 40, &protocol::Options::default());
+        let long = render::render("a\n\nnew\n\nb\n", 40, &protocol::Options::default());
+
+        let insert = diff(&short.lines, &long.lines);
+        let mut applied = short.lines.clone();
+        applied.splice(insert.from - 1..insert.from - 1 + insert.del, insert.lines);
+        assert_eq!(applied, long.lines);
+
+        let delete = diff(&long.lines, &short.lines);
+        let mut applied = long.lines.clone();
+        applied.splice(delete.from - 1..delete.from - 1 + delete.del, delete.lines);
+        assert_eq!(applied, short.lines);
+    }
+
+    #[test]
+    fn an_unchanged_document_patches_to_nothing() {
+        let output = render::render("# same\n\nbody\n", 40, &protocol::Options::default());
+        let patch = diff(&output.lines, &output.lines);
+        assert_eq!(patch.del, 0);
+        assert!(patch.lines.is_empty());
+    }
+
+    #[test]
+    fn blocks_cover_the_document_and_map_back_to_source() {
+        let source = "# heading\n\nparagraph text\n\n```rust\nfn main() {}\n```\n";
+        let output = render::render(source, 40, &protocol::Options::default());
+        assert_eq!(output.blocks.len(), 3, "{:?}", output.blocks);
+        for block in &output.blocks {
+            let (row, rows, first, last) = (block.0, block.1, block.2, block.3);
+            assert!(rows >= 1, "a block with no rows should not be indexed");
+            assert!(
+                row as usize + rows as usize - 1 <= output.lines.len(),
+                "block {block:?} runs past the document"
+            );
+            assert!(first >= 1 && last >= first, "bad source range in {block:?}");
+        }
+        // The fence is three source lines and the block index must say so.
+        let fence = output.blocks.last().expect("three blocks");
+        assert_eq!(fence.3 - fence.2, 2);
     }
 
     #[test]

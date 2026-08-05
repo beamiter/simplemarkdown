@@ -45,8 +45,17 @@ So it happens in Rust — [pulldown-cmark](https://github.com/pulldown-cmark/pul
 for parsing, [unicode-width](https://github.com/unicode-rs/unicode-width) for
 measuring, [syntect](https://github.com/trishume/syntect) for code — and the
 daemon hands Vim finished rows plus the text-property spans to paint on them.
-Vim's job is a buffer replace and one `prop_add_list()` call per property
-class.
+Vim's job is a buffer splice and one `prop_add_list()` call per property class.
+
+And mostly it hands over almost nothing. The daemon remembers the rows it last
+sent for a window and replies with the splice that turns them into the new
+ones, found by trimming the common prefix and then the common suffix — which is
+the shape of an edit, because typing in a paragraph reflows that paragraph and
+leaves everything above and below it byte-identical. Fenced blocks are
+memoised on their content for the same reason: syntax highlighting is the most
+expensive thing in a render and almost never what changed. On a 4700-row
+document of prose and code, a keystroke costs 2 ms in the daemon and moves one
+row over the wire.
 
 ## Install
 
@@ -82,6 +91,30 @@ Inside the preview: `q` close, `r` re-render, `<CR>` follow a link or jump to
 the source line this row came from, `gx` open a link, `gO` contents, `]]`/`[[`
 next and previous heading.
 
+## Also in a browser
+
+The terminal preview is for reading and navigating a document while you write
+it. Some things a terminal cannot do at all — images that are images, LaTeX
+that is typeset, proportional type — so there is a second preview that runs
+beside it rather than instead of it, served by
+[omd](https://github.com/ptrglbvc/omd):
+
+```sh
+cargo install omd
+```
+
+```vim
+:SimpleMarkdownExternal        " toggle a live-reloading browser preview
+:SimpleMarkdownExternalStatic  " render once to a temp file, no server
+:SimpleMarkdownExternalClose!  " stop every server
+```
+
+One server per buffer, each on its own port, all stopped when Vim exits. omd
+watches the file on disk, so the browser follows `:w` — the in-Vim preview is
+the one that updates as you type. Nothing about omd is linked into
+`simplemarkdown-daemon`: it brings a web server, a file watcher and a clipboard
+stack, none of which belong in a process whose job is laying out rows of text.
+
 ## What it renders
 
 CommonMark plus the GitHub extensions that come up in practice — tables with
@@ -109,10 +142,16 @@ Everything has a working default; these are the ones worth knowing about.
 | `g:simplemarkdown_debounce` | `120` | ms after the last change before re-rendering |
 | `g:simplemarkdown_style` | `'unicode'` | `'ascii'` for terminals that draw box-drawing double-wide |
 | `g:simplemarkdown_syntax` | `1` | highlight fenced code |
-| `g:simplemarkdown_show_urls` | `0` | show link targets after their text |
+| `g:simplemarkdown_show_urls` | `0` | show link and image targets after their text |
+| `g:simplemarkdown_link_hint` | `1` | echo the target of the link under the cursor |
+| `g:simplemarkdown_code_numbers` | `0` | number lines inside fenced code blocks |
+| `g:simplemarkdown_table_zebra` | `0` | tint every other table body row |
+| `g:simplemarkdown_task_progress` | `1` | close a task list with `2/5 done` |
+| `g:simplemarkdown_focus_block` | `1` | wash the whole block the source cursor is in |
 | `g:simplemarkdown_sync_scroll` | `1` | preview follows the source cursor |
 | `g:simplemarkdown_sync_back` | `0` | source follows the preview cursor too |
 | `g:simplemarkdown_auto_open` | `0` | open a preview for every Markdown buffer |
+| `g:simplemarkdown_omd_port` | `3030` | first port the browser preview tries |
 
 `:help simplemarkdown` documents the rest, including every highlight group.
 
@@ -127,6 +166,7 @@ treat them as single width.
 make test          # fmt, clippy, Rust tests, daemon protocol, Vim suites
 make preview       # render the fixture to the terminal; WIDTH=100 to change
 make check-classes # prove the Rust and Vim text-property class lists agree
+make test-external # the browser preview, against a stand-in for omd
 ```
 
 `make preview` is the fastest way to review a layout change: the diff of two

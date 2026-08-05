@@ -15,8 +15,9 @@ CONTENTS                                              *simplemarkdown-contents*
     6. Configuration ............... |simplemarkdown-configuration|
     7. Highlighting ................ |simplemarkdown-highlighting|
     8. Supported Markdown .......... |simplemarkdown-markdown|
-    9. Architecture ................ |simplemarkdown-architecture|
-   10. Troubleshooting ............. |simplemarkdown-troubleshooting|
+    9. External preview ............ |simplemarkdown-external|
+   10. Architecture ................ |simplemarkdown-architecture|
+   11. Troubleshooting ............. |simplemarkdown-troubleshooting|
 
 ==============================================================================
 1. INTRODUCTION                                   *simplemarkdown-introduction*
@@ -125,7 +126,31 @@ second one.
                         |g:simplemarkdown_debug| was off at the time.
 
                                                          *:SimpleMarkdownDebug*
-:SimpleMarkdownDebug    Echo a dictionary of internal state.
+:SimpleMarkdownDebug    Echo a dictionary of internal state, including how many
+                        of the recent renders were applied as patches rather
+                        than as whole documents.
+
+The commands below drive the external preview — a browser, served by `omd`,
+alongside the in-Vim one rather than instead of it.  See
+|simplemarkdown-external|.
+
+                                                      *:SimpleMarkdownExternal*
+:SimpleMarkdownExternal Toggle the browser preview for this buffer.
+
+                                                  *:SimpleMarkdownExternalOpen*
+:SimpleMarkdownExternalOpen
+                        Start `omd` for this buffer and open the browser at it.
+                        If one is already serving this buffer, just re-open the
+                        browser there.
+
+                                                 *:SimpleMarkdownExternalClose*
+:SimpleMarkdownExternalClose[!]
+                        Stop this buffer's server.  With `!`, stop every one.
+
+                                                *:SimpleMarkdownExternalStatic*
+:SimpleMarkdownExternalStatic
+                        Render once to a temporary HTML file and open it, with
+                        no server and no live reload.
 
 ==============================================================================
 5. MAPPINGS                                           *simplemarkdown-mappings*
@@ -140,6 +165,7 @@ Plugs, for your own bindings: >
     <Plug>(simplemarkdown-toggle)
     <Plug>(simplemarkdown-focus)
     <Plug>(simplemarkdown-toc)
+    <Plug>(simplemarkdown-external)
 <
 Inside the preview window, unless |g:simplemarkdown_default_mappings| is off: >
 
@@ -207,8 +233,49 @@ off they are clipped at the frame edge and marked with `›`.
 Default: 1
 
                                                    *g:simplemarkdown_show_urls*
-Append a link's target after its text, dimmed: `docs (./x.md)`.
+Append a link's or image's target after its text, dimmed: `docs (./x.md)`.
+For an image this is often the only thing that says which file it is.
 Default: 0
+
+                                                   *g:simplemarkdown_link_hint*
+While the cursor moves through the preview, echo the target of the link it is
+on.  This answers "where does this go" without |g:simplemarkdown_show_urls|
+spending a row on every URL in the document.
+Default: 1
+
+                                                *g:simplemarkdown_code_numbers*
+Number the lines inside fenced code blocks.  The gutter comes out of the code's
+own columns rather than widening the frame, so a narrow preview buys the
+numbers with more wrapping — which is why this is off by default, and why it is
+most useful in a wide window or when you are quoting line numbers to someone.
+Default: 0
+
+                                                 *g:simplemarkdown_table_zebra*
+Tint every other table body row.  A row whose cells wrapped onto three lines is
+one stripe, not three.  Off by default because it depends on your colour scheme
+having a `CursorLine` that is visible but not loud; see
+|SimpleMarkdownTableRowAlt| to point it somewhere else.
+Default: 0
+
+                                               *g:simplemarkdown_task_progress*
+Close a task list of two or more checkboxes with a `2/5 done` line, at the
+list's own indent.  A nested checklist summarises itself where it sits.
+Default: 1
+
+                                                *g:simplemarkdown_focus_block*
+Wash the whole block the source cursor is in, rather than marking one preview
+row with 'cursorline'.  A preview row is not a unit of anything — a paragraph
+is six of them — so the row the cursor lands on says little about which block
+you are editing.  See |SimpleMarkdownFocusBlock|.
+Default: 1
+
+                                                 *g:simplemarkdown_incremental*
+Let the daemon answer a render with just the rows that changed.  Typing in a
+paragraph then repaints two rows instead of the whole document.  Turning it off
+makes every render a full one; the only reason to is to rule the patch path out
+while diagnosing something.  |:SimpleMarkdownHealth| reports how many of the
+recent renders went each way.
+Default: 1
 
                                                  *g:simplemarkdown_frontmatter*
 Render a YAML or TOML front-matter block as a labelled code frame.  With this
@@ -265,6 +332,39 @@ Echo backend log entries as they happen.  The log is recorded either way; see
 |:SimpleMarkdownLog|.
 Default: 0
 
+The rest configure the external preview; none of them do anything unless a
+|:SimpleMarkdownExternal| command is used.
+
+                                                    *g:simplemarkdown_omd_path*
+Explicit path to the `omd` binary.  Empty searches $PATH and then
+`~/.cargo/bin`, which is where `cargo install` puts it and which a Vim started
+from a desktop session frequently has not picked up.
+Default: ''
+
+                                                    *g:simplemarkdown_omd_host*
+Address the server binds.  `'0.0.0.0'` makes the preview reachable from other
+machines on the network; the browser is still pointed at the loopback address.
+Default: '127.0.0.1'
+
+                                                    *g:simplemarkdown_omd_port*
+The first port tried.  A port already in use moves the search up rather than
+failing, so several buffers can be previewed at once.
+Default: 3030
+
+                                                    *g:simplemarkdown_omd_args*
+Extra arguments passed to `omd`, between the host/port flags and the filename.
+Default: []
+
+                                                 *g:simplemarkdown_omd_browser*
+Open the browser when a server starts.  With this off the URL is echoed
+instead, which is what you want over SSH with a forwarded port.
+Default: 1
+
+                                           *g:simplemarkdown_omd_browser_delay*
+Milliseconds to wait before opening the browser, so it does not race the server
+to the port and land on a "connection refused" page.
+Default: 250
+
 ==============================================================================
 7. HIGHLIGHTING                                   *simplemarkdown-highlighting*
 
@@ -314,8 +414,25 @@ Blocks: >
     SimpleMarkdownCodeBorder               the frame
     SimpleMarkdownCodeLang                 the language label
     SimpleMarkdownCodeCont                 the ⤷ continuation marker
+    SimpleMarkdownCodeNumber               the line-number gutter -> LineNr
     SimpleMarkdownTableBorder
     SimpleMarkdownTableHead
+    SimpleMarkdownTableRowAlt              the zebra stripe -> CursorLine
+<
+                                                    *SimpleMarkdownFocusBlock*
+                                                  *SimpleMarkdownTableRowAlt*
+Two of these are washes drawn behind everything else rather than marks on the
+text, so they are linked to `CursorLine` by default and want a background, not
+a foreground: >
+
+    SimpleMarkdownFocusBlock               the block the source cursor is in
+    SimpleMarkdownTableRowAlt              every other table body row
+
+They are applied at priority 0 and 1 respectively, under every content class,
+and with `combine` on, so syntax colours show through them.  To make the focus
+wash its own thing rather than a second cursorline: >
+
+    highlight SimpleMarkdownFocusBlock guibg=#22252a ctermbg=236
 <
 Code inside a fence is highlighted with sixteen coarse groups rather than with
 syntect's own colours.  Emitting RGB from a theme would look wrong against
@@ -367,7 +484,39 @@ maths (shown verbatim as code), and Mermaid diagrams (shown as a code block).
 A terminal cannot do better with any of them.
 
 ==============================================================================
-9. ARCHITECTURE                                   *simplemarkdown-architecture*
+9. EXTERNAL PREVIEW                                   *simplemarkdown-external*
+
+The in-Vim preview and the browser one answer different questions, so the
+plugin offers both and neither replaces the other.
+
+The buffer preview is for reading and navigating a document while you write
+it: over SSH, inside tmux, with the two cursors tied together and the block
+you are editing washed in the preview.  The browser preview is for seeing what
+the document will actually look like — proportional type, images that are
+images, and LaTeX that is typeset rather than shown as source.
+
+The browser side is `omd`, a separate binary you install yourself: >
+
+    cargo install omd
+<
+Nothing about it is linked into `simplemarkdown-daemon`.  omd pulls in a web
+server, a file watcher and a clipboard stack, and none of that belongs in a
+process whose whole job is to lay out rows of text.  The plugin only supervises
+it: one server per source buffer, each on its own port, all of them stopped
+when Vim exits or the buffer is wiped.
+
+                                                 *simplemarkdown-external-save*
+omd watches the file on disk, so the browser follows `:w` rather than every
+keystroke.  That is the trade for not keeping a shadow copy of the buffer on
+disk; the in-Vim preview is the one that updates as you type.
+
+A buffer that has never been written has no file to watch and starts no server.
+
+|:SimpleMarkdownHealth| reports whether omd was found and lists every URL
+currently being served.
+
+==============================================================================
+10. ARCHITECTURE                                  *simplemarkdown-architecture*
 
 The plugin talks to `simplemarkdown-daemon` over JSON lines on stdin/stdout,
 supervised by simplecore — the same daemon supervisor the rest of the simple*
@@ -375,20 +524,36 @@ suite uses.  simplecore owns process lifetime, generation-guarded callbacks,
 exponential-backoff restarts, the crash-loop breaker and request/reply
 correlation with timeouts.
 
-A render request carries the whole buffer, the preview window's width, and the
-current options.  The reply carries:
+A render request carries the whole buffer, the preview window's width, the
+current options, and which preview window is asking.  The reply carries:
 
-    - one row per preview line: its text, its text-property spans as
-      [column, length, class] with 1-based byte columns, and the 1-based
-      source line it came from
+    - either every row, or — see below — just the ones that changed.  A row is
+      its text, its text-property spans as [column, length, class] with 1-based
+      byte columns, and the 1-based source line it came from
     - the table of contents, with both source line and preview row
     - every link, with its row, column, length and target
+    - every top-level block, as its rendered extent and the source lines it
+      came from, which is what lets the preview wash the block you are in
 
-Vim replaces the buffer's lines, groups the property spans by class, and adds
-each group with one |prop_add_list()| call.  A document with tens of thousands
-of spans therefore costs about fifty calls, not tens of thousands.
+Vim groups the property spans by class and adds each group with one
+|prop_add_list()| call.  A document with tens of thousands of spans therefore
+costs about fifty calls, not tens of thousands.
 
-Two details worth knowing if you are reading the source:
+                                              *simplemarkdown-incremental*
+Most renders do not send the whole document at all.  The daemon remembers the
+rows it last sent for a window and replies with the splice that turns them into
+the new ones, found by trimming the common prefix and then the common suffix —
+which is exactly the shape of an edit, since typing in a paragraph reflows that
+paragraph and leaves everything above and below it identical.  A keystroke in a
+five-thousand-row document then moves one row over the wire instead of five
+thousand, and Vim repaints one row's properties instead of all of them.
+
+The reply's row count is the checksum.  If the buffer disagrees with it after a
+splice the two copies have drifted, and Vim asks for a whole document rather
+than redrawing something already wrong.  |g:simplemarkdown_incremental| turns
+the whole mechanism off.
+
+Three more details worth knowing if you are reading the source:
 
 Renders are cancellable.  A keystroke burst queues one render per debounce
 window; each new one cancels the last, both in Vim's pending-request table and
@@ -398,8 +563,13 @@ A render is discarded if the window has been resized since it was requested.
 Layout is width-specific; a reply for the old width would show a ragged right
 edge until the next keystroke.
 
+Fenced blocks are highlighted once and memoised on their content, so editing a
+paragraph does not re-run syntect over every code block in the file.  Syntax
+highlighting is the most expensive thing in a render by a wide margin, and it
+is almost never what changed.
+
 ==============================================================================
-10. TROUBLESHOOTING                             *simplemarkdown-troubleshooting*
+11. TROUBLESHOOTING                             *simplemarkdown-troubleshooting*
 
 "daemon simplemarkdown-daemon not found"
     The backend has not been built.  Run `./install.sh` in the plugin
@@ -427,5 +597,21 @@ The preview stops updating
 Editing a very large document does not live-update
     Above 20000 lines the preview stops re-rendering on every keystroke and
     updates on write and on |:SimpleMarkdownRefresh| instead.
+
+"omd not found"
+    The external preview needs a binary this plugin does not ship.  Run
+    `cargo install omd`, or point |g:simplemarkdown_omd_path| at it.  The
+    in-Vim preview does not need it and is unaffected.
+
+The browser preview does not follow my typing
+    By design: omd watches the file on disk, so it reloads on `:w`.  See
+    |simplemarkdown-external-save|.
+
+|:SimpleMarkdownHealth| says every render is full, none incremental
+    Something is resetting the preview between renders — |:SimpleMarkdownLog|
+    says which.  The two common causes are a window that keeps being resized
+    (layout is width-specific, so those renders cannot be patches) and a
+    document being rewritten wholesale rather than edited, where a patch would
+    be no smaller than the document and the daemon sends the document.
 
  vim:tw=78:ts=8:noet:ft=help:norl:

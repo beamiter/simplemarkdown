@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 /// Bumped whenever the wire format changes in a way the Vim side must know
 /// about.  The plugin refuses to talk to a daemon it does not understand
 /// rather than silently mis-rendering.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// v2 added the incremental reply: a render that only changed a paragraph
+/// answers with the rows that moved rather than the whole document.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 // ─────────────────────────── requests ───────────────────────────
 
@@ -30,6 +33,15 @@ pub enum Request {
     /// Drop a queued render whose answer nobody is waiting for any more.
     #[serde(rename = "cancel")]
     Cancel { id: u64 },
+    /// Release the rows kept for a preview window that has gone away.  Not
+    /// required for correctness — a stale entry only costs memory, and the
+    /// next render for a reused key resynchronises — but a long editing
+    /// session opens and closes a lot of previews.
+    #[serde(rename = "forget")]
+    Forget {
+        #[serde(default)]
+        session: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +55,17 @@ pub struct RenderRequest {
     pub width: usize,
     #[serde(default)]
     pub opts: Options,
+    /// Which preview window this render is for.  The daemon keeps the last
+    /// rows it sent under this key so the next render can be answered as a
+    /// patch; an empty key opts out and always gets the whole document.
+    #[serde(default)]
+    pub session: String,
+    /// True when the client's copy of the previous render is intact and a
+    /// patch against it can be applied.  False after anything that resets the
+    /// preview buffer — a placeholder, an error, a fresh window — and the
+    /// daemon then answers in full and starts the session over.
+    #[serde(default)]
+    pub incremental: bool,
 }
 
 fn default_width() -> usize {
@@ -80,6 +103,18 @@ pub struct Options {
     /// Render a YAML front-matter block instead of hiding it.
     #[serde(default = "yes")]
     pub frontmatter: bool,
+    /// Number the lines inside fenced code blocks.  Off by default: it costs
+    /// columns, and in a preview beside the source the numbers are usually
+    /// already on screen.
+    #[serde(default)]
+    pub code_numbers: bool,
+    /// Tint every other table body row, which is what makes a wide table
+    /// scannable across.
+    #[serde(default)]
+    pub table_zebra: bool,
+    /// Close a task list with a `2/5 done` line.
+    #[serde(default = "yes")]
+    pub task_progress: bool,
 }
 
 fn yes() -> bool {
@@ -101,6 +136,9 @@ impl Default for Options {
             max_width: 0,
             tab_width: 4,
             frontmatter: true,
+            code_numbers: false,
+            table_zebra: false,
+            task_progress: true,
         }
     }
 }
@@ -128,14 +166,49 @@ pub struct RenderResult {
     pub id: u64,
     /// Echoed back so a late reply for a stale window size can be discarded.
     pub width: usize,
-    pub lines: Vec<Line>,
+    /// Rows the document has after this render.  The client checks its buffer
+    /// against it after applying a patch: a mismatch means the two copies have
+    /// drifted, and the honest recovery is a full render, not a redraw of
+    /// whatever is there.
+    pub total: usize,
+    /// The whole document.  Present unless `patch` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<Vec<Line>>,
+    /// The rows that moved since the last render for this session.  Present
+    /// instead of `lines` when that is the smaller answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<Patch>,
     pub toc: Vec<TocEntry>,
     pub links: Vec<LinkRef>,
+    /// Top-level blocks, for painting the one the source cursor is in.
+    pub blocks: Vec<BlockSpan>,
     pub elapsed_ms: u128,
 }
 
+/// A splice: replace `del` rows starting at `from` with `lines`.
+///
+/// One hunk, not a list of them, because it is computed by trimming the common
+/// prefix and suffix — which is exactly the shape of an edit.  A keystroke
+/// reflows one paragraph; the rows above and below it are untouched, and the
+/// wrong answer here is not an incorrect one but a large one.
+#[derive(Debug, Serialize)]
+pub struct Patch {
+    /// 1-based row where the replacement starts.
+    pub from: usize,
+    /// How many existing rows it replaces.  0 is a pure insertion.
+    pub del: usize,
+    #[serde(rename = "l")]
+    pub lines: Vec<Line>,
+}
+
+/// `[row, rows, src_first, src_last]` — a top-level block's rendered extent
+/// and the source lines it came from.  Serialises as an array for the same
+/// reason [`Prop`] does.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct BlockSpan(pub u32, pub u32, pub u32, pub u32);
+
 /// One rendered row.
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone, PartialEq, Eq)]
 pub struct Line {
     /// Display text.  Never contains a newline or a tab.
     #[serde(rename = "t")]
@@ -155,7 +228,7 @@ fn is_zero(value: &u32) -> bool {
 }
 
 /// Serialises as a three-element array; see the module comment.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq, Clone)]
 pub struct Prop(pub usize, pub usize, pub &'static str);
 
 #[derive(Debug, Serialize)]

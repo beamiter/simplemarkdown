@@ -19,9 +19,9 @@
 
 use crate::classes;
 use crate::glyphs::{self, Glyphs};
-use crate::highlight::Highlighter;
+use crate::highlight;
 use crate::inline::{self, HARD_BREAK, Laid, Run, Style, wrap};
-use crate::protocol::{Line, LinkRef, Options, Prop, TocEntry};
+use crate::protocol::{BlockSpan, Line, LinkRef, Options, Prop, TocEntry};
 use crate::table::{self, Align, Table};
 use pulldown_cmark::{
     Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, MetadataBlockKind,
@@ -40,6 +40,7 @@ pub struct Output {
     pub lines: Vec<Line>,
     pub toc: Vec<TocEntry>,
     pub links: Vec<LinkRef>,
+    pub blocks: Vec<BlockSpan>,
 }
 
 pub fn render(source: &str, width: usize, opts: &Options) -> Output {
@@ -82,13 +83,45 @@ pub fn render(source: &str, width: usize, opts: &Options) -> Output {
         footnotes: Vec::new(),
     };
 
+    // The top level is walked here rather than through `blocks()` so each
+    // block's rendered extent can be recorded as it is produced.  Nested
+    // containers are deliberately not indexed: the useful unit for "the block
+    // the cursor is in" is the paragraph, the fence, the whole table — not the
+    // list item three levels down.
+    let mut blocks: Vec<BlockSpan> = Vec::new();
     let mut cursor = 0usize;
-    renderer.blocks(&events, &mut cursor);
+    while cursor < events.len() {
+        if matches!(events[cursor].0, Event::End(_)) {
+            break;
+        }
+        let range = events[cursor].1.clone();
+        let before = renderer.out.len();
+        renderer.block(&events, &mut cursor);
+        let after = renderer.out.len();
+
+        // A block's first row may be the blank line the *previous* block asked
+        // for and this one flushed; it belongs to neither.
+        let mut start = before;
+        while start < after && renderer.out[start].text.trim().is_empty() {
+            start += 1;
+        }
+        if start < after {
+            let src_first = renderer.src_of(range.start);
+            let src_last = renderer.src_of(range.end.saturating_sub(1).max(range.start));
+            blocks.push(BlockSpan(
+                start as u32 + 1,
+                (after - start) as u32,
+                src_first,
+                src_last.max(src_first),
+            ));
+        }
+    }
 
     Output {
         lines: renderer.out,
         toc: renderer.toc,
         links: renderer.links,
+        blocks,
     }
 }
 
@@ -518,6 +551,9 @@ impl Renderer<'_> {
             })
             .unwrap_or(0);
 
+        let mut tasks = 0usize;
+        let mut done = 0usize;
+
         while *i < ev.len() {
             match &ev[*i].0 {
                 Event::Start(Tag::Item) => {
@@ -529,6 +565,10 @@ impl Renderer<'_> {
                         }
                         _ => None,
                     };
+                    if let Some(checked) = task {
+                        tasks += 1;
+                        done += usize::from(checked);
+                    }
                     let (marker, marker_props) =
                         self.item_marker(task, start, number, marker_width, depth);
                     let indent = " ".repeat(marker.width());
@@ -555,7 +595,38 @@ impl Renderer<'_> {
                 _ => self.block(ev, i),
             }
         }
+        self.task_progress(tasks, done);
         self.gap();
+    }
+
+    /// Close a task list with how much of it is done.
+    ///
+    /// Only for lists of two or more checkboxes: a single `- [ ]` needs no
+    /// summary, and a list with none is not a task list at all.  The line sits
+    /// at the list's own indent, so a nested checklist summarises itself where
+    /// it belongs rather than at the left margin.
+    fn task_progress(&mut self, tasks: usize, done: usize) {
+        if !self.opts.task_progress || tasks < 2 {
+            return;
+        }
+        let glyph = if done == tasks {
+            self.glyphs.task_done
+        } else {
+            self.glyphs.task_todo
+        };
+        let class = if done == tasks {
+            classes::TASK_DONE
+        } else {
+            classes::TASK
+        };
+        let label = format!(" {done}/{tasks} done");
+        let mut text = String::from(glyph);
+        let props = vec![
+            Prop(1, glyph.len(), class),
+            Prop(glyph.len() + 1, label.len(), classes::TASK),
+        ];
+        text.push_str(&label);
+        self.emit(&text, &props, &[], 0);
     }
 
     fn item_marker(
@@ -623,6 +694,7 @@ impl Renderer<'_> {
             },
             self.avail(),
             self.glyphs,
+            self.opts.table_zebra,
         );
         for row in laid {
             self.emit(&row.text, &row.props, &row.links, row.src);
@@ -749,25 +821,39 @@ impl Renderer<'_> {
 
         self.emit_code_border(info, inner, true);
 
-        let mut highlighter = if self.opts.syntax {
-            Highlighter::new(info)
+        // Expanded up front, because the block cache is keyed on exactly the
+        // text that gets laid out.
+        let lines: Vec<String> = code
+            .lines()
+            .map(|raw| expand_tabs(raw, self.opts.tab_width))
+            .collect();
+        let highlighted = if self.opts.syntax {
+            highlight::block(info, &lines)
         } else {
-            Highlighter::new("")
+            std::sync::Arc::new(Vec::new())
         };
 
-        for (offset, raw) in code.lines().enumerate() {
-            let line = expand_tabs(raw, self.opts.tab_width);
-            let spans = if highlighter.active() {
-                highlighter.line(&line)
-            } else {
-                Vec::new()
-            };
+        // The line-number gutter, when asked for: as many columns as the
+        // highest number needs, plus a space.  It comes out of the content, so
+        // a narrow window buys the numbers with wrapped code — which is the
+        // right way round, and why this is off by default.
+        let digits = if self.opts.code_numbers && !lines.is_empty() {
+            lines.len().to_string().len()
+        } else {
+            0
+        };
+        let gutter = if digits > 0 { digits + 1 } else { 0 };
+        let body_width = inner.saturating_sub(gutter).max(4);
+
+        for (offset, line) in lines.iter().enumerate() {
+            let empty: &[(usize, usize, &'static str)] = &[];
+            let spans = highlighted.get(offset).map_or(empty, Vec::as_slice);
             let source_line = src + 1 + offset as u32;
 
             let chunks = if self.opts.code_wrap {
-                split_by_width(&line, inner, inner.saturating_sub(2).max(1))
+                split_by_width(line, body_width, body_width.saturating_sub(2).max(1))
             } else {
-                vec![clip(&line, inner, glyphs.code_clip)]
+                vec![clip(line, body_width, glyphs.code_clip)]
             };
 
             for (index, chunk) in chunks.iter().enumerate() {
@@ -775,6 +861,25 @@ impl Renderer<'_> {
                 let mut text = String::from(glyphs.box_v);
                 let mut props = vec![Prop(1, glyphs.box_v.len(), classes::CODE_BORDER)];
                 text.push(' ');
+                // Everything from here to the closing border is the block's
+                // inner span, painted as one background at the end.
+                let inner_start = text.len();
+
+                if digits > 0 {
+                    let col = text.len() + 1;
+                    // A wrapped row belongs to the line above it and gets a
+                    // blank gutter, the way an editor's own numbers behave.
+                    let label = if continued {
+                        " ".repeat(digits)
+                    } else {
+                        format!("{:>digits$}", offset + 1)
+                    };
+                    text.push_str(&label);
+                    if !continued {
+                        props.push(Prop(col, label.len(), classes::CODE_NUMBER));
+                    }
+                    text.push(' ');
+                }
 
                 if continued {
                     let col = text.len() + 1;
@@ -786,13 +891,10 @@ impl Renderer<'_> {
                 let base = text.len();
                 let body = &line[chunk.clone()];
                 text.push_str(body);
-                let used = body.width() + if continued { 2 } else { 0 };
+                let used = body.width() + gutter + if continued { 2 } else { 0 };
                 text.push_str(&" ".repeat(inner.saturating_sub(used)));
-                // One property behind the whole inner span paints the block
-                // background; the syntax spans sit on top of it.
-                props.push(Prop(base + 1, text.len() - base, classes::CODE_BLOCK));
 
-                for (offset, len, class) in intersect(&spans, chunk) {
+                for (offset, len, class) in intersect(spans, chunk) {
                     props.push(Prop(base + offset + 1, len, class));
                 }
 
@@ -800,6 +902,14 @@ impl Renderer<'_> {
                 text.push(' ');
                 text.push_str(glyphs.box_v);
                 props.push(Prop(col + 1, glyphs.box_v.len(), classes::CODE_BORDER));
+
+                // One property behind the whole inner span paints the block
+                // background; the number and syntax spans sit on top of it.
+                props.push(Prop(
+                    inner_start + 1,
+                    col - 1 - inner_start,
+                    classes::CODE_BLOCK,
+                ));
 
                 // The padding is real: without it the background stops at the
                 // text and the box looks ragged.  Emit bypasses the usual
@@ -1012,9 +1122,11 @@ impl Renderer<'_> {
                     }
                     runs.extend(inner);
 
+                    // Images get their source shown too: `![](diagram.png)` in
+                    // a terminal preview is a name and nothing else, and the
+                    // name is the only thing that tells you which file it is.
                     if let Some(href) = target
                         && self.opts.show_urls
-                        && !is_image
                         && !href.is_empty()
                     {
                         runs.push(Run::new(
@@ -1318,7 +1430,136 @@ mod tests {
     #[test]
     fn task_list_markers_render() {
         let rows = render_text("- [ ] todo\n- [x] done\n", 40);
-        assert_eq!(rows, vec!["☐ todo", "☑ done"]);
+        assert_eq!(rows, vec!["☐ todo", "☑ done", "☐ 1/2 done"]);
+    }
+
+    #[test]
+    fn a_finished_task_list_says_so_with_the_done_glyph() {
+        let rows = render_text("- [x] one\n- [x] two\n", 40);
+        assert_eq!(rows.last().map(String::as_str), Some("☑ 2/2 done"));
+    }
+
+    #[test]
+    fn a_single_checkbox_gets_no_summary() {
+        // One item needs no arithmetic, and a summary under it is noise.
+        let rows = render_text("- [ ] lonely\n", 40);
+        assert_eq!(rows, vec!["☐ lonely"]);
+    }
+
+    #[test]
+    fn a_plain_list_gets_no_summary() {
+        let rows = render_text("- one\n- two\n", 40);
+        assert_eq!(rows, vec!["• one", "• two"]);
+    }
+
+    #[test]
+    fn task_progress_can_be_turned_off() {
+        let opts = Options {
+            task_progress: false,
+            ..Options::default()
+        };
+        let rows: Vec<String> = render("- [ ] a\n- [x] b\n", 40, &opts)
+            .lines
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(rows, vec!["☐ a", "☑ b"]);
+    }
+
+    #[test]
+    fn code_line_numbers_are_gutter_aligned_and_shrink_the_body() {
+        let source = "```text\nalpha\nbeta\n```\n";
+        let plain = render_text(source, 30);
+        let opts = Options {
+            code_numbers: true,
+            ..Options::default()
+        };
+        let numbered: Vec<String> = render(source, 30, &opts)
+            .lines
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+
+        assert!(numbered[1].starts_with("│ 1 alpha"), "{:?}", numbered[1]);
+        assert!(numbered[2].starts_with("│ 2 beta"), "{:?}", numbered[2]);
+        // The box is the same width either way: the gutter comes out of the
+        // content, it is not added to the outside.
+        assert_eq!(
+            plain.iter().map(|row| row.width()).max(),
+            numbered.iter().map(|row| row.width()).max()
+        );
+    }
+
+    #[test]
+    fn code_line_numbers_are_right_aligned_across_a_widening_count() {
+        // Nine lines and then a tenth: the gutter must widen for all of them,
+        // not just the ones that need two digits.
+        let mut source = String::from("```text\n");
+        for index in 1..=10 {
+            source.push_str(&format!("line {index}\n"));
+        }
+        source.push_str("```\n");
+        let opts = Options {
+            code_numbers: true,
+            ..Options::default()
+        };
+        let rows: Vec<String> = render(&source, 40, &opts)
+            .lines
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert!(rows[1].starts_with("│  1 line 1"), "{:?}", rows[1]);
+        assert!(rows[10].starts_with("│ 10 line 10"), "{:?}", rows[10]);
+    }
+
+    #[test]
+    fn zebra_stripes_every_other_body_row_and_nothing_else() {
+        let source = "| a |\n|---|\n| 1 |\n| 2 |\n| 3 |\n";
+        let opts = Options {
+            table_zebra: true,
+            ..Options::default()
+        };
+        let striped: Vec<bool> = render(source, 40, &opts)
+            .lines
+            .iter()
+            .map(|line| {
+                line.props
+                    .iter()
+                    .any(|prop| prop.2 == classes::TABLE_ROW_ALT)
+            })
+            .collect();
+        // ┌─┐ head ├─┤ 1 2 3 └─┘ — only the second body row is tinted.
+        assert_eq!(
+            striped,
+            vec![false, false, false, false, true, false, false]
+        );
+
+        // And nothing is striped when the option is off.
+        let plain = render(source, 40, &Options::default());
+        assert!(
+            !plain
+                .lines
+                .iter()
+                .flat_map(|line| &line.props)
+                .any(|prop| prop.2 == classes::TABLE_ROW_ALT)
+        );
+    }
+
+    #[test]
+    fn show_urls_covers_images_as_well_as_links() {
+        let opts = Options {
+            show_urls: true,
+            ..Options::default()
+        };
+        let rows: Vec<String> = render("![a diagram](./diagram.png)\n", 60, &opts)
+            .lines
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert!(
+            rows[0].contains("./diagram.png"),
+            "an image should show its source: {rows:?}"
+        );
     }
 
     #[test]

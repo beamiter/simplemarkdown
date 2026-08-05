@@ -14,9 +14,18 @@ vim9script
 # class matters: a long document carries tens of thousands of spans, and
 # prop_add() one at a time is the difference between a redraw you notice and
 # one you do not.
+#
+# Since protocol v2 most renders do not arrive as a whole document at all.  The
+# daemon remembers the rows it last sent for a session and answers with the
+# splice that turns them into the new ones, so a keystroke that reflows one
+# paragraph replaces two rows and repaints two rows' worth of properties rather
+# than four thousand.  The session keeps its own copy of the row → source map
+# and splices it the same way; `total` is the checksum that catches the two
+# copies drifting apart, and a mismatch asks for a whole document back rather
+# than redrawing something that is already wrong.
 # =============================================================================
 
-const PROTOCOL_VERSION = 1
+const PROTOCOL_VERSION = 2
 const RENDER_TIMEOUT_MS = 10000
 # Rendering the whole buffer on every keystroke burst is cheap in Rust but not
 # free in JSON; past this the preview only refreshes on write and on demand.
@@ -47,6 +56,7 @@ const CLASSES: list<list<any>> = [
   ['CodeBorder', 'Comment', 8],
   ['CodeLang', 'Type', 9],
   ['CodeCont', 'NonText', 9],
+  ['CodeNumber', 'LineNr', 9],
 
   ['Link', 'Underlined', 16],
   ['LinkUrl', 'Comment', 15],
@@ -69,6 +79,9 @@ const CLASSES: list<list<any>> = [
 
   ['TableBorder', 'Comment', 8],
   ['TableHead', 'Title', 12],
+  # Behind the row, like CodeBlock: priority 1 so the borders and cell content
+  # both draw over it.
+  ['TableRowAlt', 'CursorLine', 1],
 
   ['Html', 'Comment', 5],
 
@@ -108,6 +121,12 @@ var prop_types_ready = false
 var core_ready = false
 var next_request_id = 0
 var last_elapsed_ms = -1
+# How the last renders were applied.  Worth counting: a patch path that has
+# quietly stopped patching is invisible otherwise — the preview stays correct,
+# it just gets slow again.
+var patched_renders = 0
+var full_renders = 0
+var last_patch_rows = -1
 
 # ─────────────────────────── logging ───────────────────────────
 
@@ -195,6 +214,10 @@ export def SetupHighlights()
   endfor
   highlight default link SimpleMarkdownStatus Comment
   highlight default link SimpleMarkdownTocLevel Comment
+  # The wash behind the block the source cursor is in.  Linked rather than
+  # defined so it follows whatever the colour scheme already uses to say
+  # "here"; it is applied at priority 0, under everything else.
+  highlight default link SimpleMarkdownFocusBlock CursorLine
 enddef
 
 
@@ -316,6 +339,11 @@ def DropSession(key: string): dict<any>
     endif
   endfor
   sessions->remove(key)
+  # The daemon is holding this session's last rows so it could patch them; the
+  # window is gone, so nothing will.
+  if core_ready
+    simplemarkdown#core#Send({type: 'forget', session: key})
+  endif
   return session
 enddef
 
@@ -351,6 +379,16 @@ enddef
 def SessionForPreviewWindow(winid: number): string
   var key = string(winid)
   return has_key(sessions, key) ? key : ''
+enddef
+
+
+# The document a window is about, which for a preview window is the buffer it
+# is previewing rather than the buffer it holds.  The external preview asks so
+# that `:SimpleMarkdownExternal` does the same thing from either side of the
+# split.
+export def SourceBufferFor(winid: number): number
+  var key = SessionForPreviewWindow(winid)
+  return key ==# '' ? 0 : sessions[key].src_bufnr
 enddef
 
 # ─────────────────────────── opening and closing ───────────────────────────
@@ -428,8 +466,13 @@ def OpenForCurrentTab(): string
     row_for_src: [],
     toc: [],
     links: [],
+    blocks: [],
     last_row: 0,
+    last_block: [],
     syncing: false,
+    # False whenever this session's copy of the last render is not something a
+    # patch can be applied to.  The daemon resynchronises on the next render.
+    rendered: false,
   }
 
   Placeholder(key, 'Rendering…')
@@ -489,6 +532,11 @@ def Placeholder(key: string, message: string)
   session.row_for_src = []
   session.toc = []
   session.links = []
+  session.blocks = []
+  session.last_block = []
+  # The buffer now holds a message, not a render; nothing can be spliced into
+  # it, and the daemon has to be told to start the session over.
+  session.rendered = false
 enddef
 
 
@@ -548,6 +596,9 @@ def Options(): dict<any>
     frontmatter: get(g:, 'simplemarkdown_frontmatter', 1) ? true : false,
     max_width: get(g:, 'simplemarkdown_max_text_width', 0),
     tab_width: get(g:, 'simplemarkdown_tab_width', 4),
+    code_numbers: get(g:, 'simplemarkdown_code_numbers', 0) ? true : false,
+    table_zebra: get(g:, 'simplemarkdown_table_zebra', 0) ? true : false,
+    task_progress: get(g:, 'simplemarkdown_task_progress', 1) ? true : false,
   }
 enddef
 
@@ -593,6 +644,10 @@ def Render(key: string)
     lines: lines,
     width: width,
     opts: Options(),
+    session: key,
+    # Only claim a patch can be applied when this session is actually holding
+    # the rows the daemon thinks it sent.
+    incremental: session.rendered && get(g:, 'simplemarkdown_incremental', 1) ? true : false,
   }, (reply) => {
     OnRenderReply(key, reply)
   }, RENDER_TIMEOUT_MS)
@@ -640,9 +695,59 @@ enddef
 
 def Apply(key: string, reply: dict<any>)
   var session = sessions[key]
+  var patch = get(reply, 'patch', {})
+  var incremental = type(patch) == v:t_dict && !empty(patch)
+  var applied = incremental ? ApplyPatch(session, patch) : ApplyFull(session, reply)
+  if !applied
+    if incremental
+      # The patch did not fit what this session is holding.  Start over rather
+      # than leave the buffer showing a document neither side agrees on.
+      Log(printf('render %s: patch %s does not fit %d rows; resynchronising',
+        key, string(patch), len(session.lines)))
+      session.rendered = false
+      Schedule(key, 0)
+    endif
+    return
+  endif
+  if incremental
+    patched_renders += 1
+    last_patch_rows = len(get(patch, 'l', []))
+  else
+    full_renders += 1
+    last_patch_rows = -1
+  endif
+
+  # `total` is the daemon's count of the rows this render produced.  If the
+  # buffer disagrees the two copies have drifted, and the only honest fix is a
+  # whole document — patching further would compound the error.
+  var total = get(reply, 'total', -1)
+  if total >= 0 && total != len(session.lines)
+    Log(printf('render %s: %d rows applied, the daemon rendered %d; resynchronising',
+      key, len(session.lines), total))
+    session.rendered = false
+    Schedule(key, 0)
+    return
+  endif
+
+  session.rendered = true
+  session.toc = get(reply, 'toc', [])
+  session.links = get(reply, 'links', [])
+  session.blocks = get(reply, 'blocks', [])
+  session.row_for_src = BuildSourceIndex(session.src_map)
+
+  # Re-anchor on the source cursor: after an edit the row a given source line
+  # maps to has usually moved.
+  if get(g:, 'simplemarkdown_sync_scroll', 1)
+    SyncToSource(key, true)
+  endif
+  HighlightBlock(key, true)
+enddef
+
+
+def ApplyFull(session: dict<any>, reply: dict<any>): bool
   var rows = get(reply, 'lines', [])
   if type(rows) != v:t_list
-    return
+    return false
   endif
 
   var text: list<string> = []
@@ -651,34 +756,111 @@ def Apply(key: string, reply: dict<any>)
     text->add(get(row, 't', ''))
     src_map->add(get(row, 's', 0))
   endfor
-  if empty(text)
-    text = ['']
-    src_map = [0]
-  endif
 
-  Replace(session.bufnr, text)
-  ApplyProps(session.bufnr, rows)
+  # A buffer cannot hold nothing, so a document that rendered no rows at all —
+  # an empty file, or one of only blank lines — is shown as a single blank one.
+  # The session's copy stays empty regardless: it has to match what the daemon
+  # says it sent, or the row-count check below it would fail for ever.
+  Replace(session.bufnr, empty(text) ? [''] : text)
+  ApplyProps(session.bufnr, rows, 1)
 
   session.lines = text
   session.src_map = src_map
-  session.row_for_src = BuildSourceIndex(src_map)
-  session.toc = get(reply, 'toc', [])
-  session.links = get(reply, 'links', [])
-
-  # Re-anchor on the source cursor: after an edit the row a given source line
-  # maps to has usually moved.
-  if get(g:, 'simplemarkdown_sync_scroll', 1)
-    SyncToSource(key, true)
-  endif
+  return true
 enddef
 
 
-def ApplyProps(bufnr: number, rows: list<any>)
+# Replace `del` rows starting at `from` with the patch's rows, in the buffer
+# and in the row → source map together.  Text properties move with the lines
+# Vim shifts, so only the spliced-in rows need repainting — which is the whole
+# reason this path exists.
+def ApplyPatch(session: dict<any>, patch: dict<any>): bool
+  var from = get(patch, 'from', 0)
+  var del = get(patch, 'del', 0)
+  var rows = get(patch, 'l', [])
+  if from < 1 || del < 0 || type(rows) != v:t_list
+    return false
+  endif
+  if del == 0 && empty(rows)
+    # Nothing moved.  The daemon sends this when a keystroke did not change the
+    # rendering at all — a space inside a fence, a character in a comment.
+    return true
+  endif
+  # A patch that reaches past what this session is holding cannot be applied to
+  # it; say so rather than splicing at the wrong place.
+  if from - 1 + del > len(session.lines)
+    return false
+  endif
+  # The buffer is showing the single blank line that stands in for a document
+  # that rendered nothing, and its line count does not match the session's
+  # empty row list.  Splicing into that would be off by one; a full render is
+  # both correct and, for a document this size, free.
+  if empty(session.lines)
+    return false
+  endif
+
+  var text: list<string> = []
+  var src_map: list<number> = []
+  for row in rows
+    text->add(get(row, 't', ''))
+    src_map->add(get(row, 's', 0))
+  endfor
+
+  var bufnr = session.bufnr
+  if !bufexists(bufnr)
+    return false
+  endif
+  setbufvar(bufnr, '&modifiable', 1)
+  try
+    if del > 0
+      try
+        prop_clear(from, from + del - 1, {bufnr: bufnr})
+      catch
+      endtry
+    endif
+
+    # Overwrite what both sides have, then insert or delete the remainder.
+    # Rewriting in place where possible is what keeps the window from
+    # scrolling: appendbufline() and deletebufline() move the rows below.
+    var overlap = min([del, len(text)])
+    if overlap > 0
+      silent! setbufline(bufnr, from, text[0 : overlap - 1])
+    endif
+    if len(text) > del
+      silent! appendbufline(bufnr, from + del - 1, text[del : ])
+    elseif del > len(text)
+      silent! deletebufline(bufnr, from + len(text), from + del - 1)
+    endif
+  finally
+    setbufvar(bufnr, '&modifiable', 0)
+    setbufvar(bufnr, '&modified', 0)
+  endtry
+
+  ApplyProps(bufnr, rows, from)
+
+  session.lines = Splice(session.lines, from, del, text)
+  session.src_map = Splice(session.src_map, from, del, src_map)
+  return true
+enddef
+
+
+# `list[from - 1 : from - 1 + del] = replacement`, spelled out because Vim's
+# slice indices are end-relative when negative and `list[0 : -1]` is not the
+# empty list.
+def Splice(list_: list<any>, from: number, del: number, replacement: list<any>): list<any>
+  var head = from > 1 ? list_[0 : from - 2] : []
+  var rest = from - 1 + del
+  var tail = rest < len(list_) ? list_[rest : ] : []
+  return head + replacement + tail
+enddef
+
+
+def ApplyProps(bufnr: number, rows: list<any>, first_row: number)
   EnsurePropTypes()
   # One prop_add_list() per class instead of one prop_add() per span: on a
   # 2000-row document that is thousands of calls saved per render.
   var grouped: dict<list<list<number>>> = {}
-  var lnum = 0
+  var lnum = first_row - 1
   for row in rows
     lnum += 1
     for prop in get(row, 'p', [])
@@ -693,7 +875,12 @@ def ApplyProps(bufnr: number, rows: list<any>)
     endfor
   endfor
 
-  for [class, spans] in items(grouped)
+  # Sorted, not in whatever order the classes happened to appear: two properties
+  # that start at the same column and share a priority are drawn in the order
+  # they were added, so an unsorted pass would paint a full render and a patched
+  # one differently for the same rows.
+  for class in sort(keys(grouped))
+    var spans = grouped[class]
     var name = PropType(class)
     if empty(prop_type_get(name))
       # A daemon newer than the plugin: skip the class rather than abort the
@@ -740,6 +927,95 @@ def BuildSourceIndex(src_map: list<number>): list<number>
   return index
 enddef
 
+# ─────────────────────────── the current block ───────────────────────────
+
+# 'cursorline' marks one row, but a preview row is not a unit of anything: a
+# paragraph is six rows, a fenced block is however many, and the row the cursor
+# happens to sit on says nothing about which of them the user is editing.  The
+# daemon indexes every top-level block by both its rendered extent and the
+# source lines it came from, so the block containing the source cursor can be
+# painted whole.
+const FOCUS_TYPE = 'simplemarkdown:FocusBlock'
+
+def EnsureFocusType()
+  if empty(prop_type_get(FOCUS_TYPE))
+    # Below every content class: this is a wash behind the text, not a mark on
+    # it.  `combine` keeps the syntax colours showing through.
+    prop_type_add(FOCUS_TYPE, {
+      highlight: 'SimpleMarkdownFocusBlock',
+      combine: true,
+      priority: 0,
+    })
+  endif
+enddef
+
+
+# The block whose source range contains `src_line`, as `[row, rows]`.
+def BlockForSource(session: dict<any>, src_line: number): list<number>
+  var best: list<number> = []
+  for block in session.blocks
+    if type(block) != v:t_list || len(block) < 4
+      continue
+    endif
+    if src_line >= block[2] && src_line <= block[3]
+      # Blocks are emitted in document order and do not overlap, so the first
+      # match is the answer; keep looking only to prefer a later, tighter one.
+      best = [block[0], block[1]]
+    elseif block[2] > src_line
+      break
+    endif
+  endfor
+  return best
+enddef
+
+
+def HighlightBlock(key: string, force: bool = false)
+  if !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  if !get(g:, 'simplemarkdown_focus_block', 1) || !bufexists(session.bufnr)
+    return
+  endif
+  if !WindowExists(session.src_winid)
+    return
+  endif
+
+  var wanted = BlockForSource(session, line('.', session.src_winid))
+  if !force && wanted == session.last_block
+    return
+  endif
+
+  EnsureFocusType()
+  if !empty(session.last_block)
+    try
+      prop_remove({type: FOCUS_TYPE, bufnr: session.bufnr, all: true})
+    catch
+    endtry
+  endif
+  session.last_block = wanted
+  if empty(wanted)
+    return
+  endif
+
+  var first = wanted[0]
+  var last = min([wanted[0] + wanted[1] - 1, len(session.lines)])
+  var spans: list<list<number>> = []
+  for row in range(first, last)
+    # +1 on the end column so the wash reaches the end of the row rather than
+    # stopping one cell short of it.
+    spans->add([row, 1, row, max([2, len(session.lines[row - 1]) + 1])])
+  endfor
+  if empty(spans)
+    return
+  endif
+  try
+    prop_add_list({type: FOCUS_TYPE, bufnr: session.bufnr}, spans)
+  catch
+    Log('focus block: ' .. v:exception)
+  endtry
+enddef
+
 # ─────────────────────────── scroll sync ───────────────────────────
 
 def SyncToSource(key: string, force: bool = false)
@@ -776,6 +1052,38 @@ def SyncToSource(key: string, force: bool = false)
   finally
     session.syncing = false
   endtry
+enddef
+
+
+# A link in the preview shows its text, not its target — that is the whole
+# point of rendering it — which leaves no way to tell `[docs](./a.md)` from
+# `[docs](https://example.com/a.md)` short of pressing <CR> and finding out.
+# Echoing the target of the link under the cursor answers that without
+# spending a row on every URL in the document, which `show_urls` does.
+var last_hint = ''
+
+def HintLink(session: dict<any>)
+  if !get(g:, 'simplemarkdown_link_hint', 1)
+    return
+  endif
+  var link = LinkAtCursor(session, line('.'), col('.'), true)
+  var href = get(link, 'href', '')
+  if href ==# last_hint
+    return
+  endif
+  last_hint = href
+  if href ==# ''
+    # Only clear a message this function put there; anything else on the line
+    # belongs to whatever printed it.
+    echo ''
+    return
+  endif
+  # Truncated to the command line, which would otherwise turn a long URL into
+  # a hit-enter prompt on every cursor move.
+  var room = max([20, &columns - 12])
+  echo '[link] ' .. (strdisplaywidth(href) > room
+    ? strcharpart(href, 0, room - 1) .. '…'
+    : href)
 enddef
 
 
@@ -859,6 +1167,7 @@ export def OnCursorMoved(winid: number)
   PruneSessions()
   var preview = SessionForPreviewWindow(winid)
   if preview !=# ''
+    HintLink(sessions[preview])
     SyncToPreview(preview)
     return
   endif
@@ -868,6 +1177,7 @@ export def OnCursorMoved(winid: number)
   for [key, session] in items(sessions)
     if session.src_winid == winid
       SyncToSource(key)
+      HighlightBlock(key)
       return
     endif
   endfor
@@ -947,6 +1257,7 @@ export def OnBufferWipeout(bufnr: number)
       CloseSession(key)
     endif
   endfor
+  simplemarkdown#external#OnBufferWipeout(bufnr)
 enddef
 
 
@@ -968,6 +1279,8 @@ export def Stop()
   for key in keys(sessions)
     DropSession(key)
   endfor
+  # Servers started for this Vim must not outlive it holding their ports.
+  simplemarkdown#external#StopAll()
   if core_ready
     simplemarkdown#core#Stop()
   endif
@@ -1080,8 +1393,12 @@ export def Health()
   if last_elapsed_ms >= 0
     add(lines, printf('[INFO] last render: %dms', last_elapsed_ms))
   endif
+  add(lines, printf('[INFO] renders: %d incremental, %d full%s',
+    patched_renders, full_renders,
+    last_patch_rows >= 0 ? printf(' (last patch: %d rows)', last_patch_rows) : ''))
   add(lines, printf('[%s] text properties: %s',
     has('textprop') ? 'OK' : 'ERROR', has('textprop') ? 'available' : 'missing'))
+  lines += simplemarkdown#external#HealthLines()
   for line in lines
     echo line
   endfor
@@ -1097,6 +1414,10 @@ export def DebugStatus(): dict<any>
     in_flight: len(requests),
     last_render_ms: last_elapsed_ms,
     style: get(g:, 'simplemarkdown_style', 'unicode'),
+    patched_renders: patched_renders,
+    full_renders: full_renders,
+    last_patch_rows: last_patch_rows,
+    external: simplemarkdown#external#Status(),
   }
 enddef
 
@@ -1111,7 +1432,10 @@ def CurrentPreviewSession(): string
 enddef
 
 
-def LinkAtCursor(session: dict<any>, row: number, col: number): dict<any>
+# `exact` refuses the row fallback below.  Pressing <CR> on a row with one link
+# means that link even if the cursor is a column off; a hint that appeared for
+# the whole row would claim the row is a link when most of it is prose.
+def LinkAtCursor(session: dict<any>, row: number, col: number, exact: bool = false): dict<any>
   for link in session.links
     if get(link, 'row', 0) != row
       continue
@@ -1121,6 +1445,9 @@ def LinkAtCursor(session: dict<any>, row: number, col: number): dict<any>
       return link
     endif
   endfor
+  if exact
+    return {}
+  endif
   # Nothing under the cursor exactly: take the first link on the row, which is
   # what a user pressing <CR> on a line with one link means.
   for link in session.links
@@ -1151,15 +1478,7 @@ enddef
 
 def Follow(session: dict<any>, href: string)
   if href =~? '^\(https\?\|ftp\|mailto\):'
-    if exists('*netrw#BrowseX')
-      call netrw#BrowseX(href, 0)
-    elseif executable('xdg-open')
-      call job_start(['xdg-open', href])
-    elseif executable('open')
-      call job_start(['open', href])
-    else
-      echo href
-    endif
+    simplemarkdown#external#Browse(href)
     return
   endif
 

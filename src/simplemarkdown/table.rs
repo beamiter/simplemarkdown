@@ -43,7 +43,9 @@ const PER_COLUMN: usize = PAD * 2 + 1;
 /// Below this a column holds nothing but an ellipsis, so stop shrinking.
 const MIN_COLUMN: usize = 3;
 
-pub fn layout(table: &Table, avail: usize, glyphs: &Glyphs) -> Vec<Row> {
+/// `zebra` tints every other body row.  A wide table is read across, and the
+/// eye needs something to run along; the alternative is counting dividers.
+pub fn layout(table: &Table, avail: usize, glyphs: &Glyphs, zebra: bool) -> Vec<Row> {
     let columns = table
         .header
         .len()
@@ -72,8 +74,20 @@ pub fn layout(table: &Table, avail: usize, glyphs: &Glyphs) -> Vec<Row> {
             glyphs.tbl_h,
         ));
     }
-    for row in &table.rows {
-        out.extend(body_rows(row, &widths, table, glyphs, false));
+    for (index, row) in table.rows.iter().enumerate() {
+        let laid = body_rows(row, &widths, table, glyphs, false);
+        // The stripe follows the source row, not the rendered one: a row whose
+        // cells wrapped onto three lines is one stripe, not three.
+        let stripe = zebra && index % 2 == 1;
+        out.extend(laid.into_iter().map(|mut row| {
+            if stripe {
+                // Behind everything else, and pushed first so a same-priority
+                // class drawn later still wins.
+                row.props
+                    .insert(0, Prop(1, row.text.len(), classes::TABLE_ROW_ALT));
+            }
+            row
+        }));
     }
     out.push(border(
         &widths,
@@ -286,7 +300,7 @@ mod tests {
 
     #[test]
     fn every_row_is_the_same_width() {
-        let rows = layout(&simple(), 60, &glyphs::UNICODE);
+        let rows = layout(&simple(), 60, &glyphs::UNICODE, false);
         let widths: Vec<usize> = rows.iter().map(|row| row.text.width()).collect();
         assert!(
             widths.windows(2).all(|pair| pair[0] == pair[1]),
@@ -304,7 +318,7 @@ mod tests {
             ]],
             aligns: vec![Align::Left, Align::Left],
         };
-        let rows = layout(&wide, 40, &glyphs::UNICODE);
+        let rows = layout(&wide, 40, &glyphs::UNICODE, false);
         for row in &rows {
             assert!(
                 row.text.width() <= 40,
@@ -317,14 +331,14 @@ mod tests {
 
     #[test]
     fn right_alignment_pads_on_the_left() {
-        let rows = layout(&simple(), 60, &glyphs::UNICODE);
+        let rows = layout(&simple(), 60, &glyphs::UNICODE, false);
         // Row 3 is the first body row: │ a  │  1 │
         assert!(rows[3].text.contains(" 1 │"));
     }
 
     #[test]
     fn properties_stay_inside_their_row() {
-        let rows = layout(&simple(), 60, &glyphs::UNICODE);
+        let rows = layout(&simple(), 60, &glyphs::UNICODE, false);
         for row in &rows {
             for prop in &row.props {
                 assert!(
@@ -338,7 +352,7 @@ mod tests {
 
     #[test]
     fn a_narrow_window_still_produces_a_table() {
-        let rows = layout(&simple(), 12, &glyphs::UNICODE);
+        let rows = layout(&simple(), 12, &glyphs::UNICODE, false);
         assert!(!rows.is_empty());
         for row in &rows {
             assert!(row.text.width() <= 20);
@@ -347,7 +361,7 @@ mod tests {
 
     #[test]
     fn ascii_mode_uses_no_box_drawing() {
-        let rows = layout(&simple(), 60, &glyphs::ASCII);
+        let rows = layout(&simple(), 60, &glyphs::ASCII, false);
         for row in &rows {
             assert!(row.text.is_ascii(), "{:?}", row.text);
         }

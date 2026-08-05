@@ -1,4 +1,4 @@
-.PHONY: build install fmt lint test test-rust test-daemon test-vim clean vim-core defcompile check-classes preview
+.PHONY: build install fmt lint test test-rust test-daemon test-vim test-external clean vim-core defcompile check-classes preview bench
 
 build:
 	cargo build --release --locked
@@ -12,7 +12,7 @@ fmt:
 lint:
 	cargo clippy --all-targets -- -D warnings
 
-test: fmt lint test-rust test-daemon check-classes defcompile vim-core test-vim
+test: fmt lint test-rust test-daemon check-classes defcompile vim-core test-vim test-external
 
 test-rust:
 	cargo test --all-targets
@@ -49,8 +49,13 @@ check-classes: build
 	@diff -u /tmp/simplemarkdown-rust-classes /tmp/simplemarkdown-vim-classes \
 		&& echo "classes: Rust and Vim agree"
 
-test-vim:
+test-vim: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_smoke.vim
+
+# The external (browser) preview, against a stand-in for omd: port allocation,
+# one server per buffer, and teardown.  Needs no omd installed.
+test-external:
+	vim -Nu NONE -n -i NONE -es -S tests/vim_external.vim
 
 # Render the fixture to the terminal.  Handy when changing the layout code:
 # the diff of two runs is the whole review.

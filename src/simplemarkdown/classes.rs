@@ -38,6 +38,7 @@ classes! {
     CODE_BORDER => "CodeBorder",
     CODE_LANG   => "CodeLang",
     CODE_CONT   => "CodeCont",
+    CODE_NUMBER => "CodeNumber",
 
     // Links and images.
     LINK        => "Link",
@@ -63,6 +64,7 @@ classes! {
     // Tables.
     TABLE_BORDER => "TableBorder",
     TABLE_HEAD   => "TableHead",
+    TABLE_ROW_ALT => "TableRowAlt",
 
     // Raw passthrough.
     HTML        => "Html",

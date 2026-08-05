@@ -63,3 +63,8 @@ jobs:
 
       - name: End-to-end preview smoke test
         run: make test-vim
+
+      # The browser preview runs against a stand-in for omd, so CI does not
+      # need the real binary — only that the supervisor around it is correct.
+      - name: External preview supervisor
+        run: make test-external
