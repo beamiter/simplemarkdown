@@ -54,6 +54,7 @@ simplemarkdown-architecture	simplemarkdown.txt	/*simplemarkdown-architecture*
 simplemarkdown-commands	simplemarkdown.txt	/*simplemarkdown-commands*
 simplemarkdown-configuration	simplemarkdown.txt	/*simplemarkdown-configuration*
 simplemarkdown-contents	simplemarkdown.txt	/*simplemarkdown-contents*
+simplemarkdown-daemon-cli	simplemarkdown.txt	/*simplemarkdown-daemon-cli*
 simplemarkdown-external	simplemarkdown.txt	/*simplemarkdown-external*
 simplemarkdown-external-save	simplemarkdown.txt	/*simplemarkdown-external-save*
 simplemarkdown-highlighting	simplemarkdown.txt	/*simplemarkdown-highlighting*
@@ -62,6 +63,7 @@ simplemarkdown-installation	simplemarkdown.txt	/*simplemarkdown-installation*
 simplemarkdown-introduction	simplemarkdown.txt	/*simplemarkdown-introduction*
 simplemarkdown-mappings	simplemarkdown.txt	/*simplemarkdown-mappings*
 simplemarkdown-markdown	simplemarkdown.txt	/*simplemarkdown-markdown*
+simplemarkdown-simplecore	simplemarkdown.txt	/*simplemarkdown-simplecore*
 simplemarkdown-troubleshooting	simplemarkdown.txt	/*simplemarkdown-troubleshooting*
 simplemarkdown-usage	simplemarkdown.txt	/*simplemarkdown-usage*
 simplemarkdown.txt	simplemarkdown.txt	/*simplemarkdown.txt*
