@@ -129,6 +129,7 @@ command! SimpleMarkdownClose simplemarkdown#Close()
 command! SimpleMarkdownRefresh simplemarkdown#Refresh()
 command! SimpleMarkdownFocus simplemarkdown#Focus()
 command! SimpleMarkdownToc simplemarkdown#Toc()
+command! SimpleMarkdownToggleTask simplemarkdown#ToggleTask()
 command! SimpleMarkdownRestart simplemarkdown#Restart()
 command! SimpleMarkdownHealth simplemarkdown#Health()
 command! SimpleMarkdownLog simplemarkdown#ShowLog()
@@ -147,6 +148,7 @@ command! SimpleMarkdownExternalStatic simplemarkdown#external#Static()
 nnoremap <silent> <Plug>(simplemarkdown-toggle) <Cmd>SimpleMarkdown<CR>
 nnoremap <silent> <Plug>(simplemarkdown-focus) <Cmd>SimpleMarkdownFocus<CR>
 nnoremap <silent> <Plug>(simplemarkdown-toc) <Cmd>SimpleMarkdownToc<CR>
+nnoremap <silent> <Plug>(simplemarkdown-toggle-task) <Cmd>SimpleMarkdownToggleTask<CR>
 nnoremap <silent> <Plug>(simplemarkdown-external) <Cmd>SimpleMarkdownExternal<CR>
 if g:simplemarkdown_set_default_mapping && maparg('<leader>md', 'n') ==# ''
   nmap <silent> <leader>md <Plug>(simplemarkdown-toggle)

@@ -46,9 +46,24 @@ function! s:PreviewWin() abort
   return 0
 endfunction
 
+function! s:PreviewWinForTab(tabnr) abort
+  for l:win in getwininfo()
+    if l:win.tabnr == a:tabnr
+          \ && getbufvar(l:win.bufnr, '&filetype') ==# 'simplemarkdown'
+      return l:win.winid
+    endif
+  endfor
+  return 0
+endfunction
+
 function! s:PreviewLines() abort
   let l:winid = s:PreviewWin()
   return l:winid ? getbufline(winbufnr(l:winid), 1, '$') : []
+endfunction
+
+function! s:PreviewHas(winid, pattern) abort
+  return a:winid > 0
+        \ && join(getbufline(winbufnr(a:winid), 1, '$'), "\n") =~# a:pattern
 endfunction
 
 " ------------------------------------------------------------------ setup ---
@@ -64,8 +79,8 @@ call writefile([
       \ '',
       \ '## Second heading',
       \ '',
-      \ '- alpha',
-      \ '- beta',
+      \ '- [ ] alpha',
+      \ '- [x] beta',
       \ '',
       \ '```rust',
       \ 'fn main() {}',
@@ -84,6 +99,7 @@ let s:src_win = win_getid()
 
 for s:name in ['SimpleMarkdown', 'SimpleMarkdownOpen', 'SimpleMarkdownClose',
       \ 'SimpleMarkdownRefresh', 'SimpleMarkdownFocus', 'SimpleMarkdownToc',
+      \ 'SimpleMarkdownToggleTask',
       \ 'SimpleMarkdownRestart', 'SimpleMarkdownHealth', 'SimpleMarkdownLog',
       \ 'SimpleMarkdownDebug', 'SimpleMarkdownResize', 'SimpleMarkdownStyle']
   call assert_equal(2, exists(':' .. s:name), s:name .. ' is defined')
@@ -108,7 +124,8 @@ let s:lines = s:PreviewLines()
 let s:joined = join(s:lines, "\n")
 call assert_true(s:joined =~# '▌ Title', 'the H1 marker is drawn')
 call assert_true(s:joined =~# '━━━', 'the H1 rule is drawn')
-call assert_true(s:joined =~# '• alpha', 'list bullets are drawn')
+call assert_true(s:joined =~# '☐ alpha', 'an unchecked task is drawn')
+call assert_true(s:joined =~# '☑ beta', 'a checked task is drawn')
 call assert_true(s:joined =~# '╭─ rust', 'the code fence is boxed and labelled')
 call assert_true(s:joined =~# '┌─', 'the table is boxed')
 
@@ -116,6 +133,124 @@ call assert_true(s:joined =~# '┌─', 'the table is boxed')
 let s:pbuf = winbufnr(s:PreviewWin())
 call assert_false(getbufvar(s:pbuf, '&modifiable'), 'the preview is not modifiable')
 call assert_equal('nofile', getbufvar(s:pbuf, '&buftype'))
+
+" ----------------------------------------------------------- task toggling ---
+
+" `x` in the preview edits the mapped Markdown checkbox, and the same command
+" works from the source side too.
+call win_gotoid(s:PreviewWin())
+call assert_notequal('', maparg('x', 'n'), 'preview maps x to task toggling')
+call search('☐ alpha')
+SimpleMarkdownToggleTask
+call assert_equal('- [x] alpha', getbufline(winbufnr(s:src_win), 7)[0])
+call assert_true(s:Wait('join(s:PreviewLines(), "\n") =~# "☑ alpha"', 5000),
+      \ 'checking a preview task re-renders it')
+
+" Toggle it back so the rest of the fixture retains its original state.
+call win_gotoid(s:src_win)
+call cursor(7, 1)
+SimpleMarkdownToggleTask
+call assert_equal('- [ ] alpha', getline(7))
+call assert_true(s:Wait('join(s:PreviewLines(), "\n") =~# "☐ alpha"', 5000),
+      \ 'unchecking a source task re-renders it')
+
+for [s:task_source, s:task_want] in [
+      \ ['  - [ ] nested', '  - [x] nested'],
+      \ ['2. [x] ordered', '2. [ ] ordered'],
+      \ ['> - [ ] quoted', '> - [x] quoted'],
+      \ ]
+  call setline(7, s:task_source)
+  SimpleMarkdownToggleTask
+  call assert_equal(s:task_want, getline(7),
+        \ 'task syntax toggles: ' .. s:task_source)
+endfor
+call setline(7, '- [ ] alpha')
+SimpleMarkdownRefresh
+call assert_true(s:Wait('join(s:PreviewLines(), "\n") =~# "☐ alpha"', 5000),
+      \ 'task syntax checks restore the fixture')
+
+call win_gotoid(s:PreviewWin())
+call search('1/2 done')
+let s:tasks_before = getbufline(winbufnr(s:src_win), 7, 8)
+SimpleMarkdownToggleTask
+call assert_equal(s:tasks_before, getbufline(winbufnr(s:src_win), 7, 8),
+      \ 'the generated progress row cannot toggle a real task')
+
+" A preview row must never edit through a map from an older source snapshot.
+" Insert a task above alpha while its old preview is still on screen; blindly
+" following that map would toggle the newly inserted task on row 7.
+let s:race_preview = s:PreviewWin()
+let s:saved_debounce = g:simplemarkdown_debounce
+let g:simplemarkdown_debounce = 10000
+call win_gotoid(s:src_win)
+call append(6, '- [ ] inserted race')
+call simplemarkdown#OnTextChanged(bufnr('%'))
+call win_gotoid(s:race_preview)
+call search('☐ alpha')
+SimpleMarkdownToggleTask
+call assert_equal(['- [ ] inserted race', '- [ ] alpha'],
+      \ getbufline(winbufnr(s:src_win), 7, 8),
+      \ 'a stale preview map fails closed instead of editing the wrong task')
+call assert_true(execute('messages') =~# 'preview mapping is stale; refreshing',
+      \ 'the stale action explains that it is refreshing')
+call assert_true(s:Wait('s:PreviewHas(s:race_preview, "☐ inserted race")', 5000),
+      \ 'a stale task action immediately refreshes the preview')
+
+call win_gotoid(s:src_win)
+call deletebufline('%', 7)
+let g:simplemarkdown_debounce = s:saved_debounce
+call simplemarkdown#OnTextChanged(bufnr('%'))
+call assert_true(s:Wait('!s:PreviewHas(s:race_preview, "inserted race")', 5000),
+      \ 'the edit-race fixture is removed again')
+
+" Every tab owns a preview session, but sessions that show the same source
+" buffer must move together after either an explicit task edit or TextChanged.
+let s:first_tab = tabpagenr()
+let s:first_preview = s:PreviewWinForTab(s:first_tab)
+call win_gotoid(s:src_win)
+tab split
+let s:second_tab = tabpagenr()
+let s:second_src_win = win_getid()
+SimpleMarkdownOpen
+let s:second_preview = s:PreviewWinForTab(s:second_tab)
+call assert_true(s:second_preview > 0, 'a second tab opens its own preview')
+call assert_true(s:Wait('s:PreviewHas(s:second_preview, "☐ alpha")', 5000),
+      \ 'the second preview renders the shared source')
+call assert_equal(2, simplemarkdown#DebugStatus().sessions,
+      \ 'two tabs keep two preview sessions')
+
+call win_gotoid(s:second_preview)
+call search('☐ alpha')
+SimpleMarkdownToggleTask
+call assert_equal('- [x] alpha', getbufline(winbufnr(s:second_src_win), 7)[0])
+call assert_true(s:Wait('s:PreviewHas(s:first_preview, "☑ alpha")'
+      \ .. ' && s:PreviewHas(s:second_preview, "☑ alpha")', 5000),
+      \ 'a task edit refreshes every tab showing the source buffer')
+
+call win_gotoid(s:second_src_win)
+let s:broadcast_original = getline(3)
+call setline(3, 'A paragraph broadcast to every tab.')
+call simplemarkdown#OnTextChanged(bufnr('%'))
+call assert_true(s:Wait('s:PreviewHas(s:first_preview, "broadcast to every tab")'
+      \ .. ' && s:PreviewHas(s:second_preview, "broadcast to every tab")', 5000),
+      \ 'TextChanged refreshes every tab showing the source buffer')
+call setline(3, s:broadcast_original)
+call simplemarkdown#OnTextChanged(bufnr('%'))
+call assert_true(s:Wait('!s:PreviewHas(s:first_preview, "broadcast to every tab")'
+      \ .. ' && !s:PreviewHas(s:second_preview, "broadcast to every tab")', 5000),
+      \ 'both previews return to the restored source text')
+
+call cursor(7, 1)
+SimpleMarkdownToggleTask
+call assert_equal('- [ ] alpha', getline(7))
+call assert_true(s:Wait('s:PreviewHas(s:first_preview, "☐ alpha")'
+      \ .. ' && s:PreviewHas(s:second_preview, "☐ alpha")', 5000),
+      \ 'source-side task toggling also refreshes every session')
+
+SimpleMarkdownClose
+tabclose!
+call assert_equal(1, simplemarkdown#DebugStatus().sessions,
+      \ 'closing the second tab leaves the original session')
 
 " ----------------------------------------------------------- text properties ---
 

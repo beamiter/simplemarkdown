@@ -98,6 +98,17 @@ second one.
                         one moves both windows to it.  Falls back to the
                         location list when +popupwin is missing.
 
+                                                  *:SimpleMarkdownToggleTask*
+:SimpleMarkdownToggleTask
+                        Check or uncheck the task under the cursor. From the
+                        preview it follows the exact preview-to-source mapping;
+                        from the source it acts on the current line. Nested,
+                        ordered, and block-quoted task items are supported. A
+                        preview map is valid only for the exact source revision
+                        it rendered: a stale action is refused and immediately
+                        refreshed. Every tab previewing that source refreshes
+                        after the edit.
+
                                                         *:SimpleMarkdownResize*
 :SimpleMarkdownResize [{columns}]
                         Resize the preview window.  With no argument, re-apply
@@ -165,6 +176,7 @@ Plugs, for your own bindings: >
     <Plug>(simplemarkdown-toggle)
     <Plug>(simplemarkdown-focus)
     <Plug>(simplemarkdown-toc)
+    <Plug>(simplemarkdown-toggle-task)
     <Plug>(simplemarkdown-external)
 <
 Inside the preview window, unless |g:simplemarkdown_default_mappings| is off: >
@@ -175,6 +187,7 @@ Inside the preview window, unless |g:simplemarkdown_default_mappings| is off: >
             window to the line this row came from
     gx      follow the link on this row
     gO      show the table of contents
+    x       check/uncheck the task on this row in the Markdown source
     ]]      next heading
     [[      previous heading
 <
@@ -562,6 +575,12 @@ in the daemon, which drops the work before starting it.
 A render is discarded if the window has been resized since it was requested.
 Layout is width-specific; a reply for the old width would show a ragged right
 edge until the next keystroke.
+
+The preview-to-source row map is bound to the source buffer's |changedtick|
+and to the render generation that produced it. Editing through an older map
+could target a different checkbox after lines were inserted, so preview `x`
+fails closed and requests a fresh render instead. Source edits schedule every
+preview session for that buffer, including sessions in other tab pages.
 
 Fenced blocks are highlighted once and memoised on their content, so editing a
 paragraph does not re-run syntect over every code block in the file.  Syntax

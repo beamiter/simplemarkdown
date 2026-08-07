@@ -37,6 +37,13 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **Interactive tasks.** `x` on a real task row in the Vim preview toggles
+  its `[ ]` / `[x]` marker in the Markdown source and re-renders immediately;
+  `:SimpleMarkdownToggleTask` does the same from either window. Generated
+  progress rows cannot accidentally toggle the last task above them. The row
+  map is bound to the source `changedtick` and render generation: a stale
+  preview action fails closed and refreshes, and every tab session showing the
+  same source buffer is refreshed together.
 - **Incremental renders** (protocol v2).  The daemon remembers the rows it last
   sent for a preview window and answers with the splice that turns them into
   the new ones, found by trimming the common prefix and suffix.  A keystroke in

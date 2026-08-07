@@ -365,14 +365,15 @@ def CurrentSessionKey(): string
 enddef
 
 
-def SessionForSourceBuffer(bufnr: number): string
+def SessionKeysForSourceBuffer(bufnr: number): list<string>
   PruneSessions()
+  var result: list<string> = []
   for [key, session] in items(sessions)
     if session.src_bufnr == bufnr
-      return key
+      add(result, key)
     endif
   endfor
-  return ''
+  return result
 enddef
 
 
@@ -463,6 +464,12 @@ def OpenForCurrentTab(): string
     width: 0,
     lines: [],
     src_map: [],
+    # A row map is safe for source-editing actions only while it still belongs
+    # to this exact source state and the newest render requested by the session.
+    src_map_bufnr: 0,
+    src_map_changedtick: -1,
+    src_map_generation: 0,
+    render_generation: 0,
     row_for_src: [],
     toc: [],
     links: [],
@@ -494,6 +501,7 @@ def SetupBufferMappings()
   nnoremap <buffer> <silent> <CR> <Cmd>call simplemarkdown#Activate()<CR>
   nnoremap <buffer> <silent> gx <Cmd>call simplemarkdown#OpenLink()<CR>
   nnoremap <buffer> <silent> gO <Cmd>call simplemarkdown#Toc()<CR>
+  nnoremap <buffer> <silent> x <Cmd>call simplemarkdown#ToggleTask()<CR>
   nnoremap <buffer> <silent> ]] <Cmd>call simplemarkdown#NextHeading(1)<CR>
   nnoremap <buffer> <silent> [[ <Cmd>call simplemarkdown#NextHeading(-1)<CR>
 enddef
@@ -529,6 +537,9 @@ def Placeholder(key: string, message: string)
   Replace(session.bufnr, ['', '  ' .. message])
   session.lines = []
   session.src_map = []
+  session.src_map_bufnr = 0
+  session.src_map_changedtick = -1
+  session.src_map_generation = 0
   session.row_for_src = []
   session.toc = []
   session.links = []
@@ -586,6 +597,13 @@ def Schedule(key: string, delay: number = -1)
 enddef
 
 
+def ScheduleSourceSessions(bufnr: number, delay: number = -1)
+  for key in SessionKeysForSourceBuffer(bufnr)
+    Schedule(key, delay)
+  endfor
+enddef
+
+
 def Options(): dict<any>
   return {
     unicode: get(g:, 'simplemarkdown_style', 'unicode') ==# 'unicode' ? true : false,
@@ -622,8 +640,12 @@ def Render(key: string)
   endif
   session.width = width
 
-  var lines = getbufline(session.src_bufnr, 1, '$')
+  var source_bufnr = session.src_bufnr
+  var source_changedtick: number = getbufvar(source_bufnr, 'changedtick')
+  var lines = getbufline(source_bufnr, 1, '$')
   var id = NextId()
+  session.render_generation = get(session, 'render_generation', 0) + 1
+  var generation: number = session.render_generation
 
   # A previous render for this session is now moot; tell the daemon so it does
   # not spend a core laying out a document nobody will look at.
@@ -649,7 +671,7 @@ def Render(key: string)
     # the rows the daemon thinks it sent.
     incremental: session.rendered && get(g:, 'simplemarkdown_incremental', 1) ? true : false,
   }, (reply) => {
-    OnRenderReply(key, reply)
+    OnRenderReply(key, generation, source_bufnr, source_changedtick, reply)
   }, RENDER_TIMEOUT_MS)
 
   if sent == 0
@@ -659,7 +681,12 @@ def Render(key: string)
 enddef
 
 
-def OnRenderReply(key: string, reply: dict<any>)
+def OnRenderReply(
+    key: string,
+    generation: number,
+    source_bufnr: number,
+    source_changedtick: number,
+    reply: dict<any>)
   var id = string(get(reply, 'id', 0))
   if has_key(requests, id)
     requests->remove(id)
@@ -668,7 +695,24 @@ def OnRenderReply(key: string, reply: dict<any>)
     return
   endif
   var session = sessions[key]
+  if generation != get(session, 'render_generation', 0)
+    Log(printf('discarding stale render generation %d for %s (current %d)',
+      generation, key, get(session, 'render_generation', 0)))
+    return
+  endif
   session.pending = false
+
+  # The source may change after getbufline() but before the worker replies.  A
+  # row map from that snapshot must never be attached to the edited buffer: in
+  # particular, preview `x` could otherwise toggle a different task line.
+  if session.src_bufnr != source_bufnr
+      || getbufvar(source_bufnr, 'changedtick') != source_changedtick
+    Log(printf('discarding render generation %d for stale source tick %d',
+      generation, source_changedtick))
+    session.rendered = false
+    Schedule(key, 0)
+    return
+  endif
 
   if get(reply, 'type', '') ==# 'error' || get(reply, '_failed', false)
     var message = get(reply, 'message', 'render failed')
@@ -689,11 +733,15 @@ def OnRenderReply(key: string, reply: dict<any>)
   endif
 
   last_elapsed_ms = get(reply, 'elapsed_ms', -1)
-  Apply(key, reply)
+  if Apply(key, reply)
+    session.src_map_bufnr = source_bufnr
+    session.src_map_changedtick = source_changedtick
+    session.src_map_generation = generation
+  endif
 enddef
 
 
-def Apply(key: string, reply: dict<any>)
+def Apply(key: string, reply: dict<any>): bool
   var session = sessions[key]
   var patch = get(reply, 'patch', {})
   var incremental = type(patch) == v:t_dict && !empty(patch)
@@ -707,7 +755,7 @@ def Apply(key: string, reply: dict<any>)
       session.rendered = false
       Schedule(key, 0)
     endif
-    return
+    return false
   endif
   if incremental
     patched_renders += 1
@@ -726,7 +774,7 @@ def Apply(key: string, reply: dict<any>)
       key, len(session.lines), total))
     session.rendered = false
     Schedule(key, 0)
-    return
+    return false
   endif
 
   session.rendered = true
@@ -741,6 +789,7 @@ def Apply(key: string, reply: dict<any>)
     SyncToSource(key, true)
   endif
   HighlightBlock(key, true)
+  return true
 enddef
 
 
@@ -1150,16 +1199,16 @@ enddef
 # ─────────────────────────── events ───────────────────────────
 
 export def OnTextChanged(bufnr: number)
-  var key = SessionForSourceBuffer(bufnr)
-  if key ==# ''
+  var info = getbufinfo(bufnr)
+  if empty(info) || empty(SessionKeysForSourceBuffer(bufnr))
     return
   endif
-  if getbufinfo(bufnr)[0].linecount > HUGE_BUFFER_LINES && mode() =~# '^[iR]'
+  if info[0].linecount > HUGE_BUFFER_LINES && mode() =~# '^[iR]'
     # Live rendering a novel on every keystroke is not a service to anybody;
     # the write and :SimpleMarkdownRefresh paths still work.
     return
   endif
-  Schedule(key)
+  ScheduleSourceSessions(bufnr)
 enddef
 
 
@@ -1208,6 +1257,9 @@ export def OnContextChanged()
   endif
   session.src_winid = winid
   session.src_bufnr = bufnr('%')
+  session.src_map_bufnr = 0
+  session.src_map_changedtick = -1
+  session.src_map_generation = 0
   session.last_row = 0
   Schedule(key, 0)
 enddef
@@ -1240,6 +1292,9 @@ export def OnWinClosed(winid: number)
       if replacement > 0 && replacement != session.winid && !empty(info)
         session.src_winid = replacement
         session.src_bufnr = info.bufnr
+        session.src_map_bufnr = 0
+        session.src_map_changedtick = -1
+        session.src_map_generation = 0
         Schedule(session_key, 0)
       else
         CloseSession(session_key)
@@ -1429,6 +1484,86 @@ def CurrentPreviewSession(): string
     return key
   endif
   return CurrentSessionKey()
+enddef
+
+
+# Byte offset of the `[ ]` / `[x]` marker in a task-list source line. The
+# prefix accepts nested bullets, ordered items, and block-quote markers, while
+# refusing a checkbox that merely appears later in ordinary prose.
+def TaskMarker(text: string): number
+  return match(text,
+    '\C^\s*\%(\%([*+-]\|\d\+[.)]\|>\)\s\+\)*\zs\[[ xX]\]\ze\%(\s\|$\)')
+enddef
+
+
+def TaskWarning(message: string)
+  echohl WarningMsg
+  echom '[SimpleMarkdown] ' .. message
+  echohl None
+enddef
+
+
+# The preview text and src_map are one render snapshot.  A source edit, source
+# switch, or newer render request makes that snapshot unsafe for an editing
+# action even though it may remain useful to look at until the refresh lands.
+def SourceMapCurrent(session: dict<any>): bool
+  var source_bufnr = get(session, 'src_bufnr', 0)
+  return get(session, 'rendered', false)
+    && source_bufnr > 0
+    && bufexists(source_bufnr)
+    && get(session, 'src_map_bufnr', 0) == source_bufnr
+    && get(session, 'src_map_changedtick', -1) == getbufvar(source_bufnr, 'changedtick')
+    && get(session, 'src_map_generation', 0) == get(session, 'render_generation', -1)
+enddef
+
+
+# Toggle a source checkbox from either side of the preview. Preview rows use
+# their exact source mapping rather than the nearest-row fallback: generated
+# task-progress rows deliberately have source 0 and must never toggle the last
+# real task above them.
+export def ToggleTask()
+  var key = CurrentPreviewSession()
+  if key ==# '' || !has_key(sessions, key)
+    TaskWarning('no preview session in this tab page.')
+    return
+  endif
+  var session = sessions[key]
+  var src = 0
+  if win_getid() == session.winid
+    if !SourceMapCurrent(session)
+      TaskWarning('preview mapping is stale; refreshing.')
+      ScheduleSourceSessions(session.src_bufnr, 0)
+      return
+    endif
+    var row = line('.') - 1
+    src = row >= 0 && row < len(session.src_map) ? session.src_map[row] : 0
+  elseif bufnr('%') == session.src_bufnr
+    src = line('.')
+  endif
+  if src <= 0
+    TaskWarning('no task on this preview row.')
+    return
+  endif
+  if !getbufvar(session.src_bufnr, '&modifiable')
+    TaskWarning('source buffer is not modifiable.')
+    return
+  endif
+  var source = get(getbufline(session.src_bufnr, src), 0, '')
+  var marker = TaskMarker(source)
+  if marker < 0
+    TaskWarning('source line is not a task item.')
+    return
+  endif
+  var checked = source[marker + 1] !=# ' '
+  var replacement = checked ? ' ' : 'x'
+  var updated = strpart(source, 0, marker + 1) .. replacement
+        \ .. strpart(source, marker + 2)
+  if setbufline(session.src_bufnr, src, updated) != 0
+    TaskWarning('could not update the source buffer.')
+    return
+  endif
+  ScheduleSourceSessions(session.src_bufnr, 0)
+  echo '[SimpleMarkdown] task ' .. (checked ? 'unchecked' : 'checked')
 enddef
 
 

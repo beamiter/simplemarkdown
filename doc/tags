@@ -14,6 +14,7 @@
 :SimpleMarkdownRestart	simplemarkdown.txt	/*:SimpleMarkdownRestart*
 :SimpleMarkdownStyle	simplemarkdown.txt	/*:SimpleMarkdownStyle*
 :SimpleMarkdownToc	simplemarkdown.txt	/*:SimpleMarkdownToc*
+:SimpleMarkdownToggleTask	simplemarkdown.txt	/*:SimpleMarkdownToggleTask*
 SimpleMarkdownFocusBlock	simplemarkdown.txt	/*SimpleMarkdownFocusBlock*
 SimpleMarkdownTableRowAlt	simplemarkdown.txt	/*SimpleMarkdownTableRowAlt*
 g:simplemarkdown_auto_close	simplemarkdown.txt	/*g:simplemarkdown_auto_close*

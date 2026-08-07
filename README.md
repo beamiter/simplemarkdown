@@ -83,13 +83,19 @@ own documentation never replaces a working one.
 :SimpleMarkdown          " toggle the preview       (also <leader>md)
 :SimpleMarkdownFocus     " jump into it
 :SimpleMarkdownToc       " headings, in a popup
+:SimpleMarkdownToggleTask " toggle the task under either cursor
 :SimpleMarkdownStyle ascii
 :SimpleMarkdownHealth
 ```
 
-Inside the preview: `q` close, `r` re-render, `<CR>` follow a link or jump to
-the source line this row came from, `gx` open a link, `gO` contents, `]]`/`[[`
-next and previous heading.
+Inside the preview: `q` close, `r` re-render, `x` check/uncheck a task, `<CR>`
+follow a link or jump to the source line this row came from, `gx` open a link,
+`gO` contents, `]]`/`[[` next and previous heading. Task toggling edits the
+Markdown source buffer immediately and works on nested/quoted task lists too.
+A preview only edits through a map for the exact source revision it rendered;
+if the source changed in the meantime, `x` refuses the stale action and
+refreshes. When several tabs preview the same buffer, edits refresh all of
+their sessions together.
 
 ## Also in a browser
 
