@@ -37,6 +37,11 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **Global preview close.** `:SimpleMarkdownClose!` closes every in-Vim
+  preview session without switching tabs or windows. It snapshots session
+  identities before closing, so `WinClosed`/user callbacks cannot make it
+  remove a newly-created replacement session.
+
 - **Interactive tasks.** `x` on a real task row in the Vim preview toggles
   its `[ ]` / `[x]` marker in the Markdown source and re-renders immediately;
   `:SimpleMarkdownToggleTask` does the same from either window. Generated

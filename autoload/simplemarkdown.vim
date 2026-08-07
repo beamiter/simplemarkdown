@@ -1348,7 +1348,25 @@ export def Open()
 enddef
 
 
-export def Close()
+export def Close(all: bool = false)
+  PruneSessions()
+  if all
+    # Work from identities captured before the first :close. WinClosed and
+    # user autocommands may mutate the live dictionary; a newly-created
+    # session that happens to reuse a window id must not be mistaken for one
+    # that existed when :SimpleMarkdownClose! began.
+    var snapshot: list<dict<any>> = []
+    for key in keys(sessions)
+      snapshot->add({key: key, bufnr: sessions[key].bufnr})
+    endfor
+    for item in snapshot
+      if has_key(sessions, item.key)
+            \ && get(sessions[item.key], 'bufnr', 0) == item.bufnr
+        CloseSession(item.key)
+      endif
+    endfor
+    return
+  endif
   var key = CurrentSessionKey()
   if key !=# ''
     CloseSession(key)

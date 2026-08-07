@@ -125,7 +125,7 @@ g:simplemarkdown_omd_browser_delay = ClampNumber(
 
 command! SimpleMarkdown simplemarkdown#Toggle()
 command! SimpleMarkdownOpen simplemarkdown#Open()
-command! SimpleMarkdownClose simplemarkdown#Close()
+command! -bang SimpleMarkdownClose simplemarkdown#Close(<bang>0 ? true : false)
 command! -bang SimpleMarkdownRefresh simplemarkdown#Refresh(<bang>0 ? true : false)
 command! SimpleMarkdownFocus simplemarkdown#Focus()
 command! SimpleMarkdownToc simplemarkdown#Toc()

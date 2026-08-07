@@ -83,7 +83,9 @@ second one.
 :SimpleMarkdownOpen     Open the preview.  Does nothing if one is already open.
 
                                                          *:SimpleMarkdownClose*
-:SimpleMarkdownClose    Close the preview.
+:SimpleMarkdownClose    Close this tab page's preview.
+:SimpleMarkdownClose!   Close every in-Vim preview without visiting its tab.
+                        Browser preview servers are unaffected.
 
                                                        *:SimpleMarkdownRefresh*
 :SimpleMarkdownRefresh[!]

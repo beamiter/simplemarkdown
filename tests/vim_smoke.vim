@@ -589,6 +589,26 @@ call assert_true(s:PreviewWin() > 0, 'the preview reopens')
 call assert_true(s:Wait('index(s:PreviewLines(), "▌ Retitled") >= 0', 5000),
       \ 'and renders again: ' .. string(s:PreviewLines()))
 
+" A bang closes the preview session in every tab without visiting either
+" background tab/window. The source windows and current focus stay intact.
+let s:close_all_first = s:PreviewWinForTab(tabpagenr())
+tab split
+let s:close_all_source = win_getid()
+SimpleMarkdownOpen
+let s:close_all_second = s:PreviewWinForTab(tabpagenr())
+call assert_true(s:close_all_first > 0 && s:close_all_second > 0)
+let s:close_all_tab = tabpagenr()
+SimpleMarkdownClose!
+call assert_equal(s:close_all_source, win_getid(),
+      \ 'Close! preserves the issuing source window')
+call assert_equal(s:close_all_tab, tabpagenr(),
+      \ 'Close! does not visit a background tab')
+call assert_equal(0, simplemarkdown#DebugStatus().sessions,
+      \ 'Close! drops every session')
+call assert_equal(0, win_id2win(s:close_all_first))
+call assert_equal(0, win_id2win(s:close_all_second))
+tabclose!
+
 " The supervisor commands must survive a full restart cycle.
 SimpleMarkdownRestart
 call assert_true(s:Wait('simplemarkdown#core#Ready()', 5000), 'restart brings the daemon back')

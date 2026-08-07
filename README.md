@@ -81,6 +81,7 @@ own documentation never replaces a working one.
 
 ```vim
 :SimpleMarkdown          " toggle the preview       (also <leader>md)
+:SimpleMarkdownClose!    " close previews in every tab
 :SimpleMarkdownRefresh   " refresh every tab showing this document
 :SimpleMarkdownRefresh!  " refresh every open preview
 :SimpleMarkdownFocus     " jump into it
@@ -103,6 +104,10 @@ Manual refresh follows the same document scope: `:SimpleMarkdownRefresh`
 skips the debounce for every tab showing the current source. Use
 `:SimpleMarkdownRefresh!` to redraw all open previews after changing a global
 render option from Vimscript.
+
+`:SimpleMarkdownClose` closes this tab's preview. Its bang form closes every
+in-Vim preview session without switching to their tabs; browser preview
+servers remain independently controlled by `:SimpleMarkdownExternalClose[!]`.
 
 ## Also in a browser
 
