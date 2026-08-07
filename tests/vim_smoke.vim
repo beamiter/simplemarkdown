@@ -240,12 +240,62 @@ call assert_true(s:Wait('!s:PreviewHas(s:first_preview, "broadcast to every tab"
       \ .. ' && !s:PreviewHas(s:second_preview, "broadcast to every tab")', 5000),
       \ 'both previews return to the restored source text')
 
+" `:SimpleMarkdownRefresh` has document scope: even when change events are
+" still sitting behind a long debounce, both tab sessions redraw now.
+let s:refresh_debounce = g:simplemarkdown_debounce
+let g:simplemarkdown_debounce = 10000
+call setline(3, 'A manual refresh reaches every tab.')
+call simplemarkdown#OnTextChanged(bufnr('%'))
+let s:refresh_origin = win_getid()
+SimpleMarkdownRefresh
+call assert_equal(s:refresh_origin, win_getid(),
+      \ 'document refresh does not switch tab or window')
+call assert_true(s:Wait('s:PreviewHas(s:first_preview, "manual refresh reaches every tab")'
+      \ .. ' && s:PreviewHas(s:second_preview, "manual refresh reaches every tab")', 5000),
+      \ 'manual refresh redraws every session for the current source')
+call setline(3, s:broadcast_original)
+SimpleMarkdownRefresh
+call assert_true(s:Wait('!s:PreviewHas(s:first_preview, "manual refresh reaches every tab")'
+      \ .. ' && !s:PreviewHas(s:second_preview, "manual refresh reaches every tab")', 5000),
+      \ 'document-scoped refresh restores every shared preview')
+let g:simplemarkdown_debounce = s:refresh_debounce
+
 call cursor(7, 1)
 SimpleMarkdownToggleTask
 call assert_equal('- [ ] alpha', getline(7))
 call assert_true(s:Wait('s:PreviewHas(s:first_preview, "☐ alpha")'
       \ .. ' && s:PreviewHas(s:second_preview, "☐ alpha")', 5000),
       \ 'source-side task toggling also refreshes every session')
+
+" A bang is deliberately broader: it refreshes unrelated documents too,
+" which is useful after changing a global renderer option from Vimscript.
+let s:shared_bufnr = bufnr('%')
+let s:all_debounce = g:simplemarkdown_debounce
+let g:simplemarkdown_debounce = 10000
+new
+setlocal filetype=markdown
+call setline(1, '# Independent refresh target')
+let s:independent_src_win = win_getid()
+call simplemarkdown#OnContextChanged()
+call assert_true(s:Wait('s:PreviewHas(s:second_preview, "Independent refresh target")', 5000),
+      \ 'the second session follows an independent Markdown window')
+call setbufline(s:shared_bufnr, 3, 'Global refresh first document.')
+call setline(1, '# Global refresh second document')
+call simplemarkdown#OnTextChanged(s:shared_bufnr)
+call simplemarkdown#OnTextChanged(bufnr('%'))
+let s:refresh_all_origin = win_getid()
+SimpleMarkdownRefresh!
+call assert_equal(s:refresh_all_origin, win_getid(),
+      \ 'Refresh! schedules sessions without visiting their tabs')
+call assert_true(s:Wait('s:PreviewHas(s:first_preview, "Global refresh first document")'
+      \ .. ' && s:PreviewHas(s:second_preview, "Global refresh second document")', 5000),
+      \ 'Refresh! redraws every open preview, even for unrelated sources')
+call setbufline(s:shared_bufnr, 3, s:broadcast_original)
+SimpleMarkdownRefresh!
+let g:simplemarkdown_debounce = s:all_debounce
+close!
+call assert_true(s:Wait('s:PreviewHas(s:second_preview, "☐ alpha")', 5000),
+      \ 'closing the independent window returns its session to the shared source')
 
 SimpleMarkdownClose
 tabclose!

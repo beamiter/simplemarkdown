@@ -75,6 +75,10 @@ All notable changes to this project are documented here.  The format follows
 
 ### Changed
 
+- `:SimpleMarkdownRefresh` and preview `r` now skip the debounce for every tab
+  session showing the current source, matching automatic edit/task refreshes.
+  `:SimpleMarkdownRefresh!` redraws every open preview for global option
+  changes.
 - `g:simplemarkdown_show_urls` now covers images as well as links.  In a
   terminal preview the source path is often the only thing that says which file
   an image is.

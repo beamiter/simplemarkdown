@@ -1366,12 +1366,22 @@ export def Toggle()
 enddef
 
 
-export def Refresh()
+export def Refresh(all: bool = false)
+  PruneSessions()
+  if all
+    for session_key in keys(sessions)
+      Schedule(session_key, 0)
+    endfor
+    return
+  endif
   var key = CurrentSessionKey()
   if key ==# ''
     return
   endif
-  Schedule(key, 0)
+  # A manual refresh is about the document, not the tab that happened to issue
+  # it. Keep every preview of that source revision in step; :...Refresh! is
+  # available when a global option change should redraw unrelated documents.
+  ScheduleSourceSessions(sessions[key].src_bufnr, 0)
 enddef
 
 

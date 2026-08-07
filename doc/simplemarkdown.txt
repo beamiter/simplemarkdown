@@ -86,8 +86,12 @@ second one.
 :SimpleMarkdownClose    Close the preview.
 
                                                        *:SimpleMarkdownRefresh*
-:SimpleMarkdownRefresh  Re-render now, skipping the debounce.  Useful after an
-                        edit made by a plugin, which may not fire |TextChanged|.
+:SimpleMarkdownRefresh[!]
+                        Re-render now, skipping the debounce. Without [!],
+                        refresh every tab previewing the current source; with
+                        [!], refresh every open preview. Useful after an edit
+                        made by a plugin, which may not fire |TextChanged|, or
+                        after changing a global renderer option.
 
                                                          *:SimpleMarkdownFocus*
 :SimpleMarkdownFocus    Move the cursor into the preview window, opening one
@@ -182,7 +186,7 @@ Plugs, for your own bindings: >
 Inside the preview window, unless |g:simplemarkdown_default_mappings| is off: >
 
     q       close the preview
-    r       re-render now
+    r       re-render this document in every tab now
     <CR>    follow the link under the cursor; with no link, jump the source
             window to the line this row came from
     gx      follow the link on this row

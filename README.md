@@ -81,6 +81,8 @@ own documentation never replaces a working one.
 
 ```vim
 :SimpleMarkdown          " toggle the preview       (also <leader>md)
+:SimpleMarkdownRefresh   " refresh every tab showing this document
+:SimpleMarkdownRefresh!  " refresh every open preview
 :SimpleMarkdownFocus     " jump into it
 :SimpleMarkdownToc       " headings, in a popup
 :SimpleMarkdownToggleTask " toggle the task under either cursor
@@ -96,6 +98,11 @@ A preview only edits through a map for the exact source revision it rendered;
 if the source changed in the meantime, `x` refuses the stale action and
 refreshes. When several tabs preview the same buffer, edits refresh all of
 their sessions together.
+
+Manual refresh follows the same document scope: `:SimpleMarkdownRefresh`
+skips the debounce for every tab showing the current source. Use
+`:SimpleMarkdownRefresh!` to redraw all open previews after changing a global
+render option from Vimscript.
 
 ## Also in a browser
 
