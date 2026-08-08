@@ -427,6 +427,11 @@ call assert_false(getbufvar(s:pbuf, '&modifiable'), 'the preview stays read-only
 " almost right — the worst possible failure — so each edit is applied twice and
 " the two results compared.
 
+" Text, properties and the row → source line each row was rendered from.  The
+" map belongs in here even though it is invisible: since v3 it is spliced by a
+" patch of its own, so the rows agreeing no longer implies the map does, and a
+" map that is off by a row is <CR> landing on the wrong line and `x` ticking the
+" wrong box.
 function! s:Snapshot() abort
   let l:buf = winbufnr(s:PreviewWin())
   let l:rows = []
@@ -438,7 +443,7 @@ function! s:Snapshot() abort
     endfor
     call add(l:rows, [getbufline(l:buf, l:lnum)[0], l:props])
   endfor
-  return l:rows
+  return [l:rows, simplemarkdown#DebugSourceMap()]
 endfunction
 
 " Apply the same buffer state twice — once however the daemon chooses, once
@@ -456,12 +461,14 @@ function! s:BothWaysAgree(what) abort
   let l:full = s:Snapshot()
   let g:simplemarkdown_incremental = 1
 
-  call assert_equal(len(l:full), len(l:incremental),
+  call assert_equal(len(l:full[0]), len(l:incremental[0]),
         \ a:what .. ': the two renders have the same row count')
-  for l:i in range(min([len(l:full), len(l:incremental)]))
-    call assert_equal(l:full[l:i], l:incremental[l:i],
+  for l:i in range(min([len(l:full[0]), len(l:incremental[0])]))
+    call assert_equal(l:full[0][l:i], l:incremental[0][l:i],
           \ printf('%s: row %d matches a full render', a:what, l:i + 1))
   endfor
+  call assert_equal(l:full[1], l:incremental[1],
+        \ a:what .. ': the row → source map matches a full render')
 endfunction
 
 call win_gotoid(s:src_win)
@@ -497,13 +504,34 @@ call s:BothWaysAgree('an edit at the first row')
 " every paste.  The map is patched separately now, so this must stay a patch —
 " and the map must still be right afterwards, which is what scroll sync and the
 " preview's `x` ride on.
-let s:top_insert_patches = simplemarkdown#DebugStatus().patched_renders
-call append(0, ['A line inserted above everything.', ''])
-call simplemarkdown#Refresh()
-call s:Wait('!simplemarkdown#DebugStatus().in_flight', 5000)
-sleep 50m
-call assert_true(simplemarkdown#DebugStatus().patched_renders > s:top_insert_patches,
-      \ 'an insertion at the top is applied as a patch, not as a whole document')
+"
+" `patched_renders` alone cannot see that.  A patch is spliced in and only then
+" checked against the daemon's row count and source-map checksum, and a patch
+" that fails either is thrown away and the whole document re-fetched — so a
+" broken splice would still be counted, and every insertion would quietly cost a
+" full document behind a green assertion.  `full_renders` is the half that tells
+" a patch that was applied from one that was merely attempted, so both are
+" asserted together.
+function! s:PatchedWithoutResync(Edit, what) abort
+  let l:patched = simplemarkdown#DebugStatus().patched_renders
+  let l:full = simplemarkdown#DebugStatus().full_renders
+  call a:Edit()
+  call simplemarkdown#Refresh()
+  call s:Wait('!simplemarkdown#DebugStatus().in_flight', 5000)
+  " A rejected patch resynchronises on a zero-delay timer, so the request is not
+  " in flight yet at the moment the first one lands.  Give it room to appear and
+  " then to finish, or the resync would be counted after the assertion.
+  sleep 200m
+  call s:Wait('!simplemarkdown#DebugStatus().in_flight', 5000)
+  call assert_true(simplemarkdown#DebugStatus().patched_renders > l:patched,
+        \ a:what .. ' is applied as a patch, not as a whole document')
+  call assert_equal(l:full, simplemarkdown#DebugStatus().full_renders,
+        \ a:what .. ' is kept, not spliced in and then discarded for a '
+        \ .. 'resynchronising full render')
+endfunction
+
+call s:PatchedWithoutResync({-> append(0, ['A line inserted above everything.', ''])},
+      \ 'an insertion at the top')
 
 let s:fence_src = search('fn main', 'nw')
 call assert_true(s:fence_src > 0, 'the fixture still has its fenced block')
@@ -515,7 +543,12 @@ call assert_true(getbufline(winbufnr(s:PreviewWin()), s:mapped)[0] =~# 'fn main'
       \ .. string(getbufline(winbufnr(s:PreviewWin()), s:mapped)))
 
 call s:BothWaysAgree('an insertion at the very top')
-call deletebufline('%', 1, 2)
+
+" And the mirror case: removing those lines shifts every row below back up, so
+" the map is patched in the other direction.  `dd` at the top of a file is at
+" least as common as `o`.
+call s:PatchedWithoutResync({-> deletebufline('%', 1, 2)},
+      \ 'a deletion at the top')
 call s:BothWaysAgree('removing the line inserted at the top')
 
 call assert_true(simplemarkdown#DebugStatus().patched_renders > s:before_patches,

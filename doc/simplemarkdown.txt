@@ -162,7 +162,9 @@ second one.
                                                          *:SimpleMarkdownDebug*
 :SimpleMarkdownDebug    Echo a dictionary of internal state, including how many
                         of the recent renders were applied as patches rather
-                        than as whole documents.
+                        than as whole documents.  A patch that failed one of the
+                        render checksums counts as a whole document, not as a
+                        patch: resynchronising is what it cost.
 
 The commands below drive the external preview — a browser, served by `omd`,
 alongside the in-Vim one rather than instead of it.  See

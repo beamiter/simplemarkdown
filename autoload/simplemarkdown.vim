@@ -891,14 +891,6 @@ def Apply(key: string, reply: dict<any>): bool
     endif
     return false
   endif
-  if incremental
-    patched_renders += 1
-    last_patch_rows = len(get(patch, 'l', []))
-  else
-    full_renders += 1
-    last_patch_rows = -1
-  endif
-
   # `total` is the daemon's count of the rows this render produced.  If the
   # buffer disagrees the two copies have drifted, and the only honest fix is a
   # whole document — patching further would compound the error.
@@ -921,6 +913,20 @@ def Apply(key: string, reply: dict<any>): bool
     session.rendered = false
     Schedule(key, 0)
     return false
+  endif
+
+  # Counted here rather than at the splice above, and deliberately: a patch that
+  # is spliced in and then thrown out by either checksum costs a whole document,
+  # so counting the attempt would report the incremental path working at exactly
+  # the moment it has stopped working.  `patched_renders` means a patch that
+  # survived validation; anything short of that shows up as the resynchronising
+  # `full_renders` it really is.
+  if incremental
+    patched_renders += 1
+    last_patch_rows = len(get(patch, 'l', []))
+  else
+    full_renders += 1
+    last_patch_rows = -1
   endif
 
   session.rendered = true
@@ -1732,6 +1738,21 @@ export def DebugStatus(): dict<any>
     last_patch_rows: last_patch_rows,
     external: simplemarkdown#external#Status(),
   }
+enddef
+
+
+# The row → source map of the session this window belongs to.  Deliberately not
+# a key of DebugStatus(): `:SimpleMarkdownDebug` echoes that dict, and one
+# integer per preview row would bury everything else on any real document.  It
+# exists so a test can compare the map two renders produced — the map is half of
+# what a render *is*, and unlike the rows it leaves no trace on screen, so
+# nothing else can tell a correct one from a plausible one.
+export def DebugSourceMap(): list<number>
+  var key = CurrentPreviewSession()
+  if key ==# '' || !has_key(sessions, key)
+    return []
+  endif
+  return copy(sessions[key].src_map)
 enddef
 
 # ─────────────────────────── preview-buffer actions ───────────────────────────

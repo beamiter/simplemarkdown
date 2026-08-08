@@ -147,6 +147,20 @@ All notable changes to this project are documented here.  The format follows
 
 ### Fixed
 
+- **`:SimpleMarkdownDebug` counts patches that were kept, not patches that were
+  tried.** A patch is spliced in first and only then checked against the row
+  count and the source-map checksum, and one that fails either is thrown away
+  and the whole document re-fetched. `patched_renders` was incremented before
+  those checks, so a session where every single insertion was rejected and
+  resynchronised reported a perfect patch rate — the one number you would look
+  at to find out whether protocol v3 was doing anything reported it working at
+  exactly the moment it had stopped. The counters now move after validation:
+  `patched_renders` means a patch that survived, and a rejected one shows up as
+  the `full_renders` it really cost. The smoke suite asserts both halves for an
+  insertion and a deletion above everything; asserting the patch count alone had
+  left an off-by-one in the source-map splice entirely invisible, with the whole
+  gate green and every insertion silently shipping a full document.
+
 - **An indented code block no longer maps one line too far.** Every row of one
   reported the source line below the one it came from, because the mapping
   assumed an opening fence — which an indented block does not have. `<CR>` on
