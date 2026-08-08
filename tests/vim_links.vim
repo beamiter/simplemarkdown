@@ -140,14 +140,26 @@ call simplemarkdown#Activate()
 call assert_equal(17, line('.', s:src_win),
       \ '#notes-1 is the second heading of that name, not the first')
 
-" An anchor that names nothing says so rather than trying to open a file.
-let s:before = len(split(execute('messages'), "\n"))
+" An anchor that names nothing says so, and does nothing else.
+"
+" What "does nothing else" is measured against matters.  Asking whether the
+" current buffer is still main.md cannot fail: following a link from the
+" preview legitimately leaves the cursor in the preview window, so the check
+" was true whatever Follow() did.  A wrong jump disturbs two things instead —
+" it opens a buffer, or it moves the source cursor — and both are recorded
+" here immediately before the attempt.
 call assert_true(s:PreviewSearch('nowhere') > 0, 'the broken link renders')
+let s:before_buffers = len(getbufinfo())
+let s:before_line = line('.', s:src_win)
 call simplemarkdown#Activate()
 call assert_true(execute('messages') =~# 'no heading matching #no-such-heading',
       \ 'an unresolvable anchor is reported')
-call assert_true(bufnr('%') != s:src_buf || expand('%:p') ==# s:main,
+call assert_equal(s:before_buffers, len(getbufinfo()),
+      \ 'an unresolvable anchor opens no buffer')
+call assert_equal(0, bufexists(s:dir .. '/#no-such-heading'),
       \ 'and no file called #no-such-heading was opened')
+call assert_equal(s:before_line, line('.', s:src_win),
+      \ 'and the source cursor stays where it was')
 
 " --------------------------------------------- a cross-file anchor, from the preview ---
 
@@ -191,7 +203,6 @@ call assert_equal(9, line('.'),
       \ 'and moves the cursor to its heading with no preview open')
 
 call cursor(11, 1)
-let s:messages_before = execute('messages')
 SimpleMarkdownFollow
 call assert_true(execute('messages') =~# 'no link under the cursor',
       \ 'a line with no link says so')
