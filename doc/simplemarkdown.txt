@@ -101,8 +101,11 @@ second one.
 
                                                            *:SimpleMarkdownToc*
 :SimpleMarkdownToc      Show the document's headings in a popup menu; choosing
-                        one moves both windows to it.  Falls back to the
-                        location list when +popupwin is missing.
+                        one moves to it.  With a preview open both windows go
+                        there; with no preview the outline is asked of the
+                        backend directly and only this cursor moves — asking
+                        what is in a document does not open a window.  Falls
+                        back to the location list when +popupwin is missing.
 
                                                   *:SimpleMarkdownToggleTask*
 :SimpleMarkdownToggleTask
@@ -298,6 +301,17 @@ one of them can be moved or dropped on its own — see
 `<CR>` and `gx` resolve a link the same way: the one under the cursor, or —
 when the cursor is not on one — the row's leftmost link.
 
+`]]` and `[[` work in a Markdown source buffer as well, where they move that
+buffer's cursor between headings.  Nothing binds them there by default; bind
+`<Plug>(simplemarkdown-next-heading)` and `<Plug>(simplemarkdown-prev-heading)`
+if you want them: >
+
+    autocmd FileType markdown
+      \ nmap <buffer> ]] <Plug>(simplemarkdown-next-heading)
+    autocmd FileType markdown
+      \ nmap <buffer> [[ <Plug>(simplemarkdown-prev-heading)
+<
+
                                                         *simplemarkdown-links*
 A link to `http:`, `https:`, `ftp:` or `mailto:` is handed to
 `netrw#BrowseX()`, or to `xdg-open`/`open` if netrw is not loaded.  A relative
@@ -475,6 +489,20 @@ Default: ''
 Restart the backend automatically if it dies, with exponential backoff and a
 crash-loop breaker.
 Default: 1
+
+                                                     *g:simplemarkdown_folding*
+Fold Markdown source buffers by heading.  Sets 'foldmethod' to `expr` on a
+Markdown buffer, with a fold per section running from its heading to the line
+before the next heading of the same level or shallower, so an H2 contains its
+H3s.  The levels come from the backend's parse rather than from a pattern over
+`^#`, which is what makes a `# comment` inside a fenced shell block stop being
+a heading — the thing every Markdown foldexpr in the wild gets wrong.
+
+The levels are cached per buffer and refreshed in the background after an edit;
+while a refresh is in flight the previous levels stand, so folds do not flap
+open on a keystroke.  'foldlevel' is set to 99, i.e. everything open: `zM`
+closes them all, `zR` opens them again.
+Default: 0
 
                                               *g:simplemarkdown_lint_on_write*
 Run |:SimpleMarkdownLint| on every write of a Markdown buffer, silently: the

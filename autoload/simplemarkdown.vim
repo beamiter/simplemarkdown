@@ -2476,9 +2476,14 @@ def OnLintReply(buf: number, winid: number, reveal: bool, reply: dict<any>)
 enddef
 
 
+# `]]` / `[[`.  In the preview this moves between rendered headings; in a
+# Markdown source buffer it moves this cursor between real ones, which is what
+# pressing it there means — it used to reach across and move a preview window's
+# cursor while leaving yours where it was.
 export def NextHeading(direction: number)
-  var key = CurrentPreviewSession()
+  var key = SessionForPreviewWindow(win_getid())
   if key ==# ''
+    SourceNextHeading(direction)
     return
   endif
   var session = sessions[key]
@@ -2506,19 +2511,15 @@ enddef
 
 export def Toc()
   var key = CurrentPreviewSession()
-  if key ==# ''
-    key = OpenForCurrentTab()
-  endif
-  if key ==# '' || !has_key(sessions, key)
+  if key ==# '' || !has_key(sessions, key) || empty(get(sessions[key], 'toc', []))
+    # No preview to read the outline off.  Asking the backend for the headings
+    # is cheap — no width, no wrapping, no highlighting — and answering "what
+    # is in this document" by splitting the window and starting a render is a
+    # surprise: the question was about the document, not about the screen.
+    SourceToc()
     return
   endif
   var session = sessions[key]
-  if empty(session.toc)
-    echohl WarningMsg
-    echom '[SimpleMarkdown] no headings in this document.'
-    echohl None
-    return
-  endif
 
   var items: list<string> = []
   for entry in session.toc
@@ -2562,4 +2563,228 @@ def TocChosen(key: string, index: number)
     win_gotoid(session.src_winid)
     normal! zz
   endif
+enddef
+
+# ─────────────────────────── the outline ───────────────────────────
+#
+# The heading tree of a source buffer, independent of any preview.  A render's
+# table of contents is a by-product of laying rows out for a window of some
+# width; this is the same question asked directly, and two things need it where
+# no preview exists: `:SimpleMarkdownToc` in a plain buffer, and folding, which
+# Vim asks about once per line per redraw and can never be made to wait.
+#
+# Held in buffer variables rather than in `sessions`, because it belongs to the
+# document rather than to a window:
+#   b:simplemarkdown_outline       the entries the backend last sent
+#   b:simplemarkdown_outline_tick  the changedtick they describe
+#   b:simplemarkdown_outline_wait  the changedtick a request is out for
+#   b:simplemarkdown_folds         one foldexpr answer per line, from the above
+
+def RequestOutline(buf: number, Done: func(list<any>)): bool
+  if !IsMarkdownBuffer(buf) || !EnsureBackend() || ProtocolMismatch() != 0
+    return false
+  endif
+  if simplemarkdown#core#Ready() && !simplemarkdown#core#HasCap('outline')
+    return false
+  endif
+  var tick: number = getbufvar(buf, 'changedtick')
+  var sent = simplemarkdown#core#Request({
+    type: 'outline',
+    id: NextId(),
+    lines: getbufline(buf, 1, '$'),
+  }, (reply) => {
+    if get(reply, '_failed', false) || get(reply, 'type', '') !=# 'outline_result'
+      return
+    endif
+    var entries: list<any> = get(reply, 'toc', [])
+    CacheOutline(buf, tick, entries)
+    Done(entries)
+  }, RENDER_TIMEOUT_MS)
+  return sent != 0
+enddef
+
+
+def CacheOutline(buf: number, tick: number, entries: list<any>)
+  if !bufexists(buf)
+    return
+  endif
+  setbufvar(buf, 'simplemarkdown_outline', entries)
+  setbufvar(buf, 'simplemarkdown_outline_tick', tick)
+  var count = get(getbufinfo(buf), 0, {linecount: 0}).linecount
+  setbufvar(buf, 'simplemarkdown_folds', BuildFolds(entries, count))
+  # Vim caches what foldexpr answered and only asks again when the buffer
+  # changes.  This answer arrived without one, so nothing would ask.
+  for winid in win_findbuf(buf)
+    if getwinvar(winid, '&foldmethod') ==# 'expr'
+      win_execute(winid, 'normal! zx')
+    endif
+  endfor
+enddef
+
+
+# One foldexpr answer per line: `>N` opens a section at level N, `N` continues
+# it, `0` is everything above the first heading.  Deeper sections are written
+# after the ones containing them, so a nested heading simply overwrites its
+# parent's level over its own lines.
+def BuildFolds(entries: list<any>, count: number): list<string>
+  var folds: list<string> = repeat(['0'], count)
+  for entry in entries
+    var level = get(entry, 'level', 1)
+    var from = get(entry, 'src', 0)
+    var to = min([get(entry, 'end_src', 0), count])
+    if from < 1 || from > count || to < from
+      continue
+    endif
+    for lnum in range(from, to)
+      folds[lnum - 1] = string(level)
+    endfor
+    folds[from - 1] = '>' .. level
+  endfor
+  return folds
+enddef
+
+
+# Ask for a fresh outline if this buffer's has been overtaken by an edit, at
+# most once per changedtick.  Called from foldexpr, so it must do nothing at
+# all in the common case: two buffer-variable reads.
+def EnsureOutline(buf: number)
+  var tick: number = getbufvar(buf, 'changedtick')
+  if getbufvar(buf, 'simplemarkdown_outline_tick', -1) == tick
+      || getbufvar(buf, 'simplemarkdown_outline_wait', -1) == tick
+    return
+  endif
+  setbufvar(buf, 'simplemarkdown_outline_wait', tick)
+  RequestOutline(buf, (_) => {
+  })
+enddef
+
+
+# `:SimpleMarkdownToc` with no preview open.
+def SourceToc()
+  var buf = bufnr('%')
+  if !IsMarkdownBuffer(buf)
+    Warn('not a Markdown buffer.')
+    return
+  endif
+  var winid = win_getid()
+  if !RequestOutline(buf, (entries) => ShowSourceToc(buf, winid, entries))
+    Warn('the backend cannot list this document''s headings.')
+  endif
+enddef
+
+
+def ShowSourceToc(buf: number, winid: number, entries: list<any>)
+  if empty(entries)
+    Warn('no headings in this document.')
+    return
+  endif
+  if !WindowExists(winid)
+    return
+  endif
+  var items: list<string> = []
+  for entry in entries
+    items->add(printf('%s%s', repeat('  ', get(entry, 'level', 1) - 1), get(entry, 'text', '')))
+  endfor
+
+  if !has('popupwin')
+    var loc: list<dict<any>> = []
+    for entry in entries
+      add(loc, {bufnr: buf, lnum: get(entry, 'src', 1), text: get(entry, 'text', '')})
+    endfor
+    setloclist(winid, [], ' ', {items: loc, title: 'SimpleMarkdown contents'})
+    InWindow(winid, 'lopen')
+    return
+  endif
+
+  popup_menu(items, {
+    title: ' Contents ',
+    padding: [0, 1, 0, 1],
+    border: [],
+    maxheight: max([5, &lines - 8]),
+    callback: (_, index) => {
+      if index <= 0 || !WindowExists(winid)
+        return
+      endif
+      var entry = get(entries, index - 1, {})
+      if empty(entry)
+        return
+      endif
+      win_gotoid(winid)
+      cursor(get(entry, 'src', 1), 1)
+      normal! zz
+    },
+  })
+enddef
+
+
+# The heading lines of a source buffer, for a motion — which has to answer now.
+# The cached outline is the better answer when it is current, because it comes
+# from the parser; the scanner is the one that is always available, and it
+# already knows not to call a `#` inside a fence a heading.
+def SourceHeadingLines(buf: number): list<number>
+  if getbufvar(buf, 'simplemarkdown_outline_tick', -1) == getbufvar(buf, 'changedtick')
+    return mapnew(getbufvar(buf, 'simplemarkdown_outline', []),
+      (_, entry) => get(entry, 'src', 0))
+  endif
+  # Warm the cache for next time, then answer with what is at hand.
+  EnsureOutline(buf)
+  return mapnew(HeadingsIn(buf), (_, heading) => heading[0])
+enddef
+
+
+def SourceNextHeading(direction: number)
+  var buf = bufnr('%')
+  if !IsMarkdownBuffer(buf)
+    return
+  endif
+  var here = line('.')
+  var lines = SourceHeadingLines(buf)
+  if direction < 0
+    lines = reverse(copy(lines))
+  endif
+  for lnum in lines
+    if direction > 0 ? lnum > here : lnum < here
+      cursor(lnum, 1)
+      normal! zz
+      return
+    endif
+  endfor
+enddef
+
+
+# Turn heading folding on for this buffer, from the FileType autocommand.
+# Behind g:simplemarkdown_folding because a plugin that silently changes
+# 'foldmethod' on a filetype is a plugin that gets blamed for someone else's
+# folds.
+export def SetupFolding()
+  var buf = bufnr('%')
+  if !get(g:, 'simplemarkdown_folding', 0) || !IsMarkdownBuffer(buf)
+    return
+  endif
+  setlocal foldmethod=expr
+  setlocal foldexpr=simplemarkdown#FoldLevel(v:lnum)
+  setlocal foldtext=simplemarkdown#FoldText()
+  # Opened, not closed.  A document that folds itself shut the moment it is
+  # loaded is one people turn folding off for; `zM` is one keystroke away.
+  setlocal foldlevel=99
+  EnsureOutline(buf)
+enddef
+
+
+export def FoldLevel(lnum: number): string
+  var buf = bufnr('%')
+  EnsureOutline(buf)
+  # Whatever the last outline said, including while a newer one is in flight:
+  # answering 0 for a document that has one heading more than it did would
+  # flatten every fold on screen for the length of a round trip.
+  var folds: list<any> = getbufvar(buf, 'simplemarkdown_folds', [])
+  return get(folds, lnum - 1, '0')
+enddef
+
+
+export def FoldText(): string
+  var text = substitute(getline(v:foldstart), '^\s*#\+\s*', '', '')
+  var count = v:foldend - v:foldstart + 1
+  var mark = get(g:, 'simplemarkdown_style', 'unicode') ==# 'unicode' ? '▸' : '+'
+  return printf('%s %s  (%d lines)', mark, text, count)
 enddef

@@ -103,6 +103,11 @@ var configured_preview_mappings = get(g:, 'simplemarkdown_preview_mappings', {})
 g:simplemarkdown_preview_mappings = type(configured_preview_mappings) == v:t_dict
   ? filter(copy(configured_preview_mappings), (_, value) => type(value) == v:t_string)
   : {}
+# Fold Markdown source buffers by heading, using the backend's parse rather
+# than a pattern over `^#` — which is what makes a shell comment inside a
+# fenced block stop being a heading.  Off by default: a plugin that changes
+# 'foldmethod' behind your back is a plugin that gets blamed for it.
+g:simplemarkdown_folding = Flag(get(g:, 'simplemarkdown_folding', 0), 0)
 # Check the document into the location list on every write.  Off by default:
 # a save that opens a window is a save people stop making.  On, it fills the
 # list and says nothing — `:lopen` when you want to look.
@@ -197,6 +202,7 @@ augroup SimpleMarkdown
   autocmd ColorScheme * try | call simplemarkdown#SetupHighlights() | catch | endtry
   autocmd VimLeavePre * try | call simplemarkdown#Stop() | catch | endtry
   autocmd FileType * try | call simplemarkdown#MaybeAutoOpen() | catch | endtry
+  autocmd FileType * try | call simplemarkdown#SetupFolding() | catch | endtry
   autocmd VimEnter * try | call simplemarkdown#MaybeAutoOpen() | catch | endtry
   if exists('##WinResized')
     autocmd WinResized * try | call simplemarkdown#OnResized() | catch | endtry

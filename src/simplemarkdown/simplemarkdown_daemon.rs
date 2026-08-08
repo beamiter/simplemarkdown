@@ -11,6 +11,7 @@ mod glyphs;
 mod highlight;
 mod inline;
 mod lint;
+mod outline;
 mod protocol;
 mod render;
 mod table;
@@ -53,6 +54,7 @@ fn capabilities() -> BTreeMap<&'static str, bool> {
         ("blocks", true),
         ("format", true),
         ("lint", true),
+        ("outline", true),
     ])
 }
 
@@ -401,6 +403,21 @@ async fn serve() -> std::io::Result<()> {
             }
             Request::Forget { session } => {
                 sessions.lock().await.remove(&session);
+            }
+            Request::Outline { id, lines } => {
+                let tx = out_tx.clone();
+                tokio::spawn(async move {
+                    let walked =
+                        tokio::task::spawn_blocking(move || outline::outline(&lines)).await;
+                    let event = match walked {
+                        Ok(toc) => Event::OutlineResult { id, toc },
+                        Err(error) => Event::Error {
+                            id,
+                            message: format!("outline failed: {error}"),
+                        },
+                    };
+                    send(&tx, event).await;
+                });
             }
             Request::Lint { id, lines } => {
                 let tx = out_tx.clone();

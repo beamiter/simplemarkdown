@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-lint test-protocol test-external clean vim-core defcompile check-classes check-codes check-protocol preview bench core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-lint test-outline test-protocol test-external clean vim-core defcompile check-classes check-codes check-protocol preview bench core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon check-protocol check-classes check-codes defcompile vim-core test-vim test-links test-format test-lint test-protocol test-external
+check: core-verify fmt clippy test test-daemon check-protocol check-classes check-codes defcompile vim-core test-vim test-links test-format test-lint test-outline test-protocol test-external
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -142,6 +142,14 @@ test-format: build
 # silent.
 test-lint: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_lint.vim
+
+# The outline: the heading tree asked for on its own, and the three things
+# that need it where no preview exists — the contents popup, `]]`/`[[` in the
+# source, and folding.  A folding bug is invisible in a unit test: an
+# incoherent set of foldexpr answers silently produces no folds at all, so the
+# test closes them and asks the window what it did.
+test-outline: build
+	vim -Nu NONE -n -i NONE -es -S tests/vim_outline.vim
 
 # Version skew: a plugin updated without its daemon rebuilt.  `check-protocol`
 # above proves the three declarations agree; this proves what happens when they

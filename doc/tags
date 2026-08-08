@@ -31,6 +31,7 @@ g:simplemarkdown_debug	simplemarkdown.txt	/*g:simplemarkdown_debug*
 g:simplemarkdown_default_mappings	simplemarkdown.txt	/*g:simplemarkdown_default_mappings*
 g:simplemarkdown_filetypes	simplemarkdown.txt	/*g:simplemarkdown_filetypes*
 g:simplemarkdown_focus_block	simplemarkdown.txt	/*g:simplemarkdown_focus_block*
+g:simplemarkdown_folding	simplemarkdown.txt	/*g:simplemarkdown_folding*
 g:simplemarkdown_frontmatter	simplemarkdown.txt	/*g:simplemarkdown_frontmatter*
 g:simplemarkdown_incremental	simplemarkdown.txt	/*g:simplemarkdown_incremental*
 g:simplemarkdown_link_hint	simplemarkdown.txt	/*g:simplemarkdown_link_hint*

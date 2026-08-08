@@ -62,6 +62,16 @@ pub enum Request {
         #[serde(default)]
         line: usize,
     },
+    /// The heading tree, answered with `outline_result`.  Cheaper than a
+    /// render by everything a render does: no width, no wrapping, no syntect —
+    /// which is what lets folding, asked about once per line per redraw, be
+    /// driven by the parser instead of by a pattern over `^#`.
+    #[serde(rename = "outline")]
+    Outline {
+        id: u64,
+        #[serde(default)]
+        lines: Vec<String>,
+    },
     /// Diagnostics for the document, answered with `lint_result`.  Carries no
     /// width and no options: nothing here depends on how the document would be
     /// laid out.
@@ -196,10 +206,31 @@ pub enum Event {
         to: usize,
         lines: Vec<String>,
     },
+    #[serde(rename = "outline_result")]
+    OutlineResult { id: u64, toc: Vec<OutlineEntry> },
     #[serde(rename = "lint_result")]
     LintResult { id: u64, items: Vec<LintItem> },
     #[serde(rename = "error")]
     Error { id: u64, message: String },
+}
+
+/// One heading, and the section it opens.
+///
+/// Not [`TocEntry`]: that one carries the rendered row a heading landed on,
+/// which only exists once something has been laid out for a window of some
+/// width.  This one carries where the heading's section *ends* in the source,
+/// which is what a fold range and a section motion are made of.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct OutlineEntry {
+    pub level: u8,
+    pub text: String,
+    pub anchor: String,
+    /// 1-based source line of the heading.
+    pub src: usize,
+    /// 1-based source line the section ends on: the line before the next
+    /// heading of the same level or shallower, or the last line of the
+    /// document.
+    pub end_src: usize,
 }
 
 /// One diagnostic.  The field names are Vim's own quickfix keys, and

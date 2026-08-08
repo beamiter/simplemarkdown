@@ -129,6 +129,16 @@ a fenced code block, so a `# comment` in a shell sample is not a heading.
 help documents all of it. Set `g:simplemarkdown_lint_on_write` to check on
 every save, silently.
 
+`:SimpleMarkdownToc` lists the headings in a popup and jumps to the one you
+pick. With no preview open it asks the daemon for just the outline instead of
+splitting the window and starting a render — asking what is in a document
+should not open one. `]]`/`[[` move between headings in the source buffer too.
+
+Set `g:simplemarkdown_folding` to fold the source by heading, with the fold
+levels coming from the same parse. Every Markdown foldexpr in the wild is a
+pattern over `^#` and every one of them folds the comments in a fenced shell
+block; this one knows the difference.
+
 Links resolve to GitHub's heading slugs, so `#notes-part-one` finds
 `## Notes: part one!` and `#notes-1` finds the second `## Notes`;
 `other.md#section` opens the file and moves to that section. Following works

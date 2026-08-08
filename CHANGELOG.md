@@ -37,6 +37,21 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **The outline is its own question now, and three things ask it.** A render's
+  table of contents is a by-product of laying rows out for a window of some
+  width — it needs syntect, and it only exists where a preview does. The
+  backend now answers `outline` on its own: headings, their anchors, and the
+  line each section *ends* on, which is what a fold range is made of.
+  `:SimpleMarkdownToc` in a plain buffer no longer splits the window and starts
+  a render to answer what is in the document; `]]` and `[[` work in the source
+  buffer, where they move your cursor rather than reaching across to a preview
+  window's; and `g:simplemarkdown_folding` folds Markdown by heading with the
+  levels from that parse. Every Markdown foldexpr in the wild is a pattern over
+  `^#`, and every one of them folds the comments in a fenced shell block. The
+  levels are cached per buffer and refreshed in the background, with the
+  previous ones standing while a refresh is in flight, because Vim asks
+  foldexpr once per line per redraw and it can never be made to wait.
+
 - **`:SimpleMarkdownLint` says what is wrong with the document, in the location
   list.** "Is anything in this file broken?" normally costs a Node install
   (markdownlint) or an LSP client (marksman); the parse that answers it has
@@ -236,6 +251,12 @@ All notable changes to this project are documented here.  The format follows
   wrong rows.
 
 ### Changed
+
+- `:SimpleMarkdownToc` with no preview open used to call the preview open —
+  a table of contents is a question about the document, not a request for a
+  window — and `<Plug>(simplemarkdown-next-heading)` pressed in a source buffer
+  used to move a preview window's cursor and leave yours where it was. Both now
+  act where they were invoked. With a preview open, nothing changes.
 
 - `:SimpleMarkdownRefresh` and preview `r` now skip the debounce for every tab
   session showing the current source, matching automatic edit/task refreshes.
