@@ -62,6 +62,15 @@ pub enum Request {
         #[serde(default)]
         line: usize,
     },
+    /// Diagnostics for the document, answered with `lint_result`.  Carries no
+    /// width and no options: nothing here depends on how the document would be
+    /// laid out.
+    #[serde(rename = "lint")]
+    Lint {
+        id: u64,
+        #[serde(default)]
+        lines: Vec<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,8 +196,26 @@ pub enum Event {
         to: usize,
         lines: Vec<String>,
     },
+    #[serde(rename = "lint_result")]
+    LintResult { id: u64, items: Vec<LintItem> },
     #[serde(rename = "error")]
     Error { id: u64, message: String },
+}
+
+/// One diagnostic.  The field names are Vim's own quickfix keys, and
+/// `severity` carries a quickfix `type` letter, so the Vim side hands the list
+/// to `setloclist()` with the text prefixed and nothing else translated.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct LintItem {
+    /// 1-based source line.
+    pub line: usize,
+    /// 1-based byte column, which is what quickfix wants.
+    pub col: usize,
+    /// `W` for something a reader will notice, `I` for advice.
+    pub severity: &'static str,
+    /// One of `lint::codes::ALL`, and documented in the help.
+    pub code: &'static str,
+    pub text: String,
 }
 
 #[derive(Debug, Serialize)]

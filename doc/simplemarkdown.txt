@@ -159,6 +159,40 @@ second one.
                         advertising the `format` capability: after updating the
                         plugin, run `./install.sh` and |:SimpleMarkdownRestart|.
 
+                                                          *:SimpleMarkdownLint*
+:SimpleMarkdownLint     Check the document and put what is wrong with it in the
+                        |location-list|, opening it when there is anything to
+                        show and closing it when there is not.  `W` entries are
+                        something a reader will notice; `I` entries are advice.
+
+                        The checks are the ones a parser can be certain about,
+                        and deliberately not the fifty style rules markdownlint
+                        ships: a linter opinionated about trailing spaces is one
+                        people switch off, and once it is off the broken link
+                        goes unreported too.  Nothing inside a fenced code block
+                        is checked — a `# comment` in a shell sample is not a
+                        heading and `[x](#nowhere)` in it is not a broken link.
+
+                        Codes, as printed by `simplemarkdown-daemon --codes`: >
+
+    broken-anchor       a #anchor link that matches no heading
+    duplicate-anchor    two headings share one anchor
+    empty-link          a link or image with no destination
+    heading-skip        a heading level was skipped
+    ragged-table-row    a table row has fewer or more cells than its header
+    undefined-footnote  a footnote reference with no definition
+    unused-footnote     a footnote definition nothing refers to
+<
+                        `broken-anchor` is only ever about an anchor in this
+                        document: `other.md#section` names a heading in a file
+                        the backend has never seen, and whether `./api.md`
+                        exists at all is not checked.
+
+                        Run it in the Markdown source.  Needs a backend
+                        advertising the `lint` capability: after updating the
+                        plugin, run `./install.sh` and |:SimpleMarkdownRestart|.
+                        See |g:simplemarkdown_lint_on_write|.
+
                                                         *:SimpleMarkdownResize*
 :SimpleMarkdownResize [{columns}]
                         Resize the preview window.  With no argument, re-apply
@@ -235,6 +269,7 @@ Plugs, for your own bindings: >
     <Plug>(simplemarkdown-toggle-task)
     <Plug>(simplemarkdown-follow)
     <Plug>(simplemarkdown-format-table)
+    <Plug>(simplemarkdown-lint)
     <Plug>(simplemarkdown-next-heading)
     <Plug>(simplemarkdown-prev-heading)
     <Plug>(simplemarkdown-external)
@@ -440,6 +475,13 @@ Default: ''
 Restart the backend automatically if it dies, with exponential backoff and a
 crash-loop breaker.
 Default: 1
+
+                                              *g:simplemarkdown_lint_on_write*
+Run |:SimpleMarkdownLint| on every write of a Markdown buffer, silently: the
+location list is filled and nothing is opened, so `:lopen` (or `:lnext`) shows
+what the last save found.  A save that grabs the screen is a save people stop
+making, which is why the window is left alone.
+Default: 0
 
                                                        *g:simplemarkdown_debug*
 Echo backend log entries as they happen.  The log is recorded either way; see
@@ -777,12 +819,18 @@ install.sh runs it on the freshly built binary before replacing a working one,
 so a build that compiles but does not work never reaches lib/.
 
 Every daemon in the simple* suite answers these three the same way.  This one
-adds three of its own: >
+adds four of its own: >
 
   simplemarkdown-daemon --classes
+  simplemarkdown-daemon --codes
   simplemarkdown-daemon --preview FILE [WIDTH]
   simplemarkdown-daemon --bench FILE [WIDTH] [RUNS]
 <
+--classes lists every text-property class the renderer can emit and --codes
+every diagnostic |:SimpleMarkdownLint| can report; `make check-classes` and
+`make check-codes` prove that the Vim side registers all of the first and the
+help documents all of the second.
+
 --preview lays a file out on stdout, which is also what `make preview` uses to
 review a layout change.  --bench times a first render, the steady-state
 renders after it and the patch a one-word edit produces; `make bench` runs it

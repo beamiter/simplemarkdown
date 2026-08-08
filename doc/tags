@@ -9,6 +9,7 @@
 :SimpleMarkdownFollow	simplemarkdown.txt	/*:SimpleMarkdownFollow*
 :SimpleMarkdownFormatTable	simplemarkdown.txt	/*:SimpleMarkdownFormatTable*
 :SimpleMarkdownHealth	simplemarkdown.txt	/*:SimpleMarkdownHealth*
+:SimpleMarkdownLint	simplemarkdown.txt	/*:SimpleMarkdownLint*
 :SimpleMarkdownLog	simplemarkdown.txt	/*:SimpleMarkdownLog*
 :SimpleMarkdownOpen	simplemarkdown.txt	/*:SimpleMarkdownOpen*
 :SimpleMarkdownRefresh	simplemarkdown.txt	/*:SimpleMarkdownRefresh*
@@ -33,6 +34,7 @@ g:simplemarkdown_focus_block	simplemarkdown.txt	/*g:simplemarkdown_focus_block*
 g:simplemarkdown_frontmatter	simplemarkdown.txt	/*g:simplemarkdown_frontmatter*
 g:simplemarkdown_incremental	simplemarkdown.txt	/*g:simplemarkdown_incremental*
 g:simplemarkdown_link_hint	simplemarkdown.txt	/*g:simplemarkdown_link_hint*
+g:simplemarkdown_lint_on_write	simplemarkdown.txt	/*g:simplemarkdown_lint_on_write*
 g:simplemarkdown_max_text_width	simplemarkdown.txt	/*g:simplemarkdown_max_text_width*
 g:simplemarkdown_min_width	simplemarkdown.txt	/*g:simplemarkdown_min_width*
 g:simplemarkdown_omd_args	simplemarkdown.txt	/*g:simplemarkdown_omd_args*

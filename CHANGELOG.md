@@ -37,6 +37,25 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **`:SimpleMarkdownLint` says what is wrong with the document, in the location
+  list.** "Is anything in this file broken?" normally costs a Node install
+  (markdownlint) or an LSP client (marksman); the parse that answers it has
+  already happened here on every keystroke, so the answer is one more walk over
+  events that are already in memory. Seven checks — `broken-anchor`,
+  `duplicate-anchor`, `empty-link`, `heading-skip`, `ragged-table-row`,
+  `undefined-footnote`, `unused-footnote` — and deliberately not one of
+  markdownlint's fifty style rules: a linter opinionated about trailing spaces
+  is one people switch off, and once it is off the broken link goes unreported
+  too. Every check names something already wrong for a reader. Nothing inside a
+  fenced code block is reported, which is what parsing buys over matching: a
+  `# comment` in a shell sample is not a heading and `[x](#nowhere)` in it is
+  not a broken link. `W` for what a reader will notice, `I` for advice, so
+  `:lnext` can be filtered. The code set is closed the way the property classes
+  are: `--codes` prints it, the help documents it, and `make check-codes` fails
+  the build when those two disagree — a diagnostic a user cannot look up is one
+  they cannot act on. `g:simplemarkdown_lint_on_write` runs it on every save,
+  silently: the list is filled and the screen is left alone.
+
 - **`:SimpleMarkdownFormatTable` realigns the GFM table the cursor is in.** The
   first command here that writes Markdown rather than reading it, and the first
   reason the daemon is worth having for something other than the preview: a

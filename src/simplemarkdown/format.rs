@@ -140,7 +140,7 @@ fn align_of(aligns: &[Alignment], column: usize) -> Alignment {
     aligns.get(column).copied().unwrap_or(Alignment::None)
 }
 
-fn is_container_char(ch: char) -> bool {
+pub fn is_container_char(ch: char) -> bool {
     ch == ' ' || ch == '\t' || ch == '>'
 }
 
@@ -148,12 +148,13 @@ fn container_prefix(row: &str) -> String {
     row[..row.len() - row.trim_start_matches(is_container_char).len()].to_string()
 }
 
-/// `| a | b |` → `["a", "b"]`.
+/// `| a | b |` → `["a", "b"]`.  Shared with the linter, which decides whether a
+/// row is ragged by the same rule the formatter pads it by.
 ///
 /// A `\|` is an escaped pipe and part of the cell, which is the only way to put
 /// one in a table at all; an unescaped one always divides cells, even inside a
 /// code span, which is what GFM says and what the renderer here already does.
-fn split_cells(row: &str) -> Vec<String> {
+pub fn split_cells(row: &str) -> Vec<String> {
     let row = row.trim_end();
     let mut cells: Vec<String> = Vec::new();
     let mut current = String::new();

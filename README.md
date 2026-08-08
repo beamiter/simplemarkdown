@@ -91,6 +91,7 @@ own documentation never replaces a working one.
 :SimpleMarkdownToggleTask " toggle the task under either cursor
 :SimpleMarkdownFollow    " follow the link under the cursor, source side too
 :SimpleMarkdownFormatTable " realign the table the cursor is in
+:SimpleMarkdownLint      " what is wrong with this document, in the loclist
 :SimpleMarkdownStyle ascii
 :SimpleMarkdownHealth
 ```
@@ -117,6 +118,16 @@ alignments it declares, a short row is padded rather than truncated, and cell
 contents are moved but never reflowed, so the change is whitespace only. Which
 lines are the table comes from the parser: a `|` inside a fenced code block is
 not a table row.
+
+`:SimpleMarkdownLint` puts what is wrong with the document in the location
+list: a `#anchor` that matches no heading, a footnote referred to but never
+defined (or defined and never referred to), a table row with the wrong number
+of cells, a link with no destination, a skipped heading level. Only checks a
+parser can be certain about — nothing about trailing spaces, and nothing inside
+a fenced code block, so a `# comment` in a shell sample is not a heading.
+`simplemarkdown-daemon --codes` lists the set; `make check-codes` proves the
+help documents all of it. Set `g:simplemarkdown_lint_on_write` to check on
+every save, silently.
 
 Links resolve to GitHub's heading slugs, so `#notes-part-one` finds
 `## Notes: part one!` and `#notes-1` finds the second `## Notes`;

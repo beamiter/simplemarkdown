@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-protocol test-external clean vim-core defcompile check-classes check-protocol preview bench core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-lint test-protocol test-external clean vim-core defcompile check-classes check-codes check-protocol preview bench core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon check-protocol check-classes defcompile vim-core test-vim test-links test-format test-protocol test-external
+check: core-verify fmt clippy test test-daemon check-protocol check-classes check-codes defcompile vim-core test-vim test-links test-format test-lint test-protocol test-external
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -108,6 +108,18 @@ check-classes: build
 	@diff -u /tmp/simplemarkdown-rust-classes /tmp/simplemarkdown-vim-classes \
 		&& echo "classes: Rust and Vim agree"
 
+# The diagnostic codes are a closed set for the same reason the property
+# classes are: a code that appears in the location list and nowhere in the help
+# is one a reader cannot act on.  `--codes` is what the daemon can emit; the
+# help is where a user looks it up; this is what keeps them the same set.
+check-codes: build
+	@./target/release/simplemarkdown-daemon --codes | cut -f1 > /tmp/simplemarkdown-codes
+	@while read -r code; do \
+		grep -q "^    $$code " doc/simplemarkdown.txt \
+			|| { echo "diagnostic $$code is not documented in doc/simplemarkdown.txt"; exit 1; }; \
+	done < /tmp/simplemarkdown-codes
+	@echo "codes: every diagnostic the daemon can emit is documented"
+
 test-vim: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_smoke.vim
 
@@ -123,6 +135,13 @@ test-links: build
 # range wrong corrupts a file rather than drawing something odd.
 test-format: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_format.vim
+
+# Diagnostics: the codes, lines and severities that reach the location list,
+# and the two behaviours that decide whether a linter is usable — that it
+# clears itself when the document is clean, and that the on-write pass is
+# silent.
+test-lint: build
+	vim -Nu NONE -n -i NONE -es -S tests/vim_lint.vim
 
 # Version skew: a plugin updated without its daemon rebuilt.  `check-protocol`
 # above proves the three declarations agree; this proves what happens when they

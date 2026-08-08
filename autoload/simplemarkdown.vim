@@ -1424,6 +1424,21 @@ export def OnTextChanged(bufnr: number)
 enddef
 
 
+# A save is the moment a document is worth checking: it is finished enough to
+# be written and the diagnostics are still about what is on screen.  Silent —
+# the list is filled, nothing is opened and nothing is echoed — because a
+# command that grabs the screen on every `:w` is one people stop saving with.
+export def OnWritten(bufnr: number)
+  if !get(g:, 'simplemarkdown_lint_on_write', 0)
+    return
+  endif
+  if bufnr <= 0 || bufnr != bufnr('%') || !IsMarkdownBuffer(bufnr)
+    return
+  endif
+  Lint(false)
+enddef
+
+
 export def OnCursorMoved(winid: number)
   PruneSessions()
   var preview = SessionForPreviewWindow(winid)
@@ -2362,6 +2377,102 @@ def OnFormatReply(buf: number, tick: number, reply: dict<any>)
   ScheduleSourceSessions(buf, 0)
   echo printf('[SimpleMarkdown] aligned %d table row%s',
     len(replacement), len(replacement) == 1 ? '' : 's')
+enddef
+
+# ─────────────────────────── diagnostics ───────────────────────────
+
+# Run `command` in `winid`.  Directly when that is where we already are:
+# win_execute() cannot open a window from another window's context, and the
+# location list is per window, so `lopen` has to happen in the window whose
+# list was just set.
+def InWindow(winid: number, command: string)
+  if win_getid() == winid
+    execute command
+  else
+    win_execute(winid, command)
+  endif
+enddef
+
+
+# `:SimpleMarkdownLint`.  `reveal` is false for the on-write pass: it fills the
+# location list and says nothing, so a save does not steal the screen.
+export def Lint(reveal: bool = true)
+  var buf = bufnr('%')
+  if !IsMarkdownBuffer(buf)
+    if reveal
+      Warn('not a Markdown buffer.')
+    endif
+    return
+  endif
+  if !EnsureBackend()
+    return
+  endif
+  var mismatch = ProtocolMismatch()
+  if mismatch != 0
+    if reveal
+      Warn(ProtocolMessage(mismatch))
+    endif
+    return
+  endif
+  if simplemarkdown#core#Ready() && !simplemarkdown#core#HasCap('lint')
+    if reveal
+      Warn('this backend cannot lint. Run ./install.sh, then :SimpleMarkdownRestart.')
+    endif
+    return
+  endif
+  var winid = win_getid()
+  var sent = simplemarkdown#core#Request({
+    type: 'lint',
+    id: NextId(),
+    lines: getbufline(buf, 1, '$'),
+  }, (reply) => OnLintReply(buf, winid, reveal, reply), RENDER_TIMEOUT_MS)
+  if sent == 0 && reveal
+    Warn('the backend is not running.')
+  endif
+enddef
+
+
+def OnLintReply(buf: number, winid: number, reveal: bool, reply: dict<any>)
+  if get(reply, '_failed', false) || get(reply, 'type', '') ==# 'error'
+    if reveal
+      Warn(get(reply, 'message', 'the backend could not check this document.'))
+    endif
+    return
+  endif
+  # The window may have been closed while the answer was in flight; its
+  # location list went with it.
+  if !bufexists(buf) || !WindowExists(winid)
+    return
+  endif
+
+  var entries: list<dict<any>> = []
+  for item in get(reply, 'items', [])
+    entries->add({
+      bufnr: buf,
+      lnum: get(item, 'line', 1),
+      col: get(item, 'col', 1),
+      type: get(item, 'severity', 'W'),
+      # The code goes in the text rather than in `nr`: quickfix prints `nr` as
+      # a bare number, and `broken-anchor` is the half of a diagnostic a reader
+      # can act on without opening the help.
+      text: printf('%s: %s', get(item, 'code', ''), get(item, 'text', '')),
+    })
+  endfor
+  setloclist(winid, [], ' ', {items: entries, title: 'SimpleMarkdown diagnostics'})
+
+  if empty(entries)
+    if reveal
+      # A window still showing the last run's problems is worse than no window:
+      # every one of them has just been fixed.
+      InWindow(winid, 'lclose')
+      echo '[SimpleMarkdown] no problems found'
+    endif
+    return
+  endif
+  if reveal
+    InWindow(winid, 'lopen')
+    echo printf('[SimpleMarkdown] %d problem%s', len(entries), len(entries) == 1 ? '' : 's')
+  endif
 enddef
 
 

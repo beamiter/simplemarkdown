@@ -10,6 +10,7 @@ mod format;
 mod glyphs;
 mod highlight;
 mod inline;
+mod lint;
 mod protocol;
 mod render;
 mod table;
@@ -31,6 +32,7 @@ With no option the daemon speaks the JSON-lines protocol on stdin/stdout.
                           time repeated renders of FILE and the patch one edit
                           produces (default width 80, 20 runs)
   --classes               list every text-property class the renderer emits
+  --codes                 list every diagnostic code `:SimpleMarkdownLint` emits
   --self-test             check the renderer against a built-in document
   --version, -V           print the version
   --help, -h              print this message";
@@ -50,6 +52,7 @@ fn capabilities() -> BTreeMap<&'static str, bool> {
         ("incremental", true),
         ("blocks", true),
         ("format", true),
+        ("lint", true),
     ])
 }
 
@@ -291,6 +294,12 @@ fn main() -> std::process::ExitCode {
             }
             std::process::ExitCode::SUCCESS
         }
+        Some("--codes") => {
+            for (code, description) in lint::codes::ALL {
+                println!("{code}\t{description}");
+            }
+            std::process::ExitCode::SUCCESS
+        }
         Some("--self-test") => match self_test() {
             Ok(()) => {
                 println!("ok");
@@ -392,6 +401,21 @@ async fn serve() -> std::io::Result<()> {
             }
             Request::Forget { session } => {
                 sessions.lock().await.remove(&session);
+            }
+            Request::Lint { id, lines } => {
+                let tx = out_tx.clone();
+                tokio::spawn(async move {
+                    let source = lines.join("\n");
+                    let linted = tokio::task::spawn_blocking(move || lint::lint(&source)).await;
+                    let event = match linted {
+                        Ok(items) => Event::LintResult { id, items },
+                        Err(error) => Event::Error {
+                            id,
+                            message: format!("lint failed: {error}"),
+                        },
+                    };
+                    send(&tx, event).await;
+                });
             }
             Request::FormatTable { id, lines, line } => {
                 // Off the reactor like a render: the parse is over the whole

@@ -103,6 +103,10 @@ var configured_preview_mappings = get(g:, 'simplemarkdown_preview_mappings', {})
 g:simplemarkdown_preview_mappings = type(configured_preview_mappings) == v:t_dict
   ? filter(copy(configured_preview_mappings), (_, value) => type(value) == v:t_string)
   : {}
+# Check the document into the location list on every write.  Off by default:
+# a save that opens a window is a save people stop making.  On, it fills the
+# list and says nothing — `:lopen` when you want to look.
+g:simplemarkdown_lint_on_write = Flag(get(g:, 'simplemarkdown_lint_on_write', 0), 0)
 g:simplemarkdown_debug = Flag(get(g:, 'simplemarkdown_debug', 0), 0)
 
 const DEFAULT_FILETYPES = ['markdown', 'markdown.pandoc', 'pandoc', 'rmd', 'vimwiki', 'ghmarkdown']
@@ -139,6 +143,7 @@ command! SimpleMarkdownToc simplemarkdown#Toc()
 command! SimpleMarkdownToggleTask simplemarkdown#ToggleTask()
 command! SimpleMarkdownFollow simplemarkdown#FollowUnderCursor()
 command! SimpleMarkdownFormatTable simplemarkdown#FormatTable()
+command! SimpleMarkdownLint simplemarkdown#Lint()
 command! SimpleMarkdownRestart simplemarkdown#Restart()
 command! SimpleMarkdownHealth simplemarkdown#Health()
 command! SimpleMarkdownLog simplemarkdown#ShowLog()
@@ -160,6 +165,7 @@ nnoremap <silent> <Plug>(simplemarkdown-toc) <Cmd>SimpleMarkdownToc<CR>
 nnoremap <silent> <Plug>(simplemarkdown-toggle-task) <Cmd>SimpleMarkdownToggleTask<CR>
 nnoremap <silent> <Plug>(simplemarkdown-follow) <Cmd>SimpleMarkdownFollow<CR>
 nnoremap <silent> <Plug>(simplemarkdown-format-table) <Cmd>SimpleMarkdownFormatTable<CR>
+nnoremap <silent> <Plug>(simplemarkdown-lint) <Cmd>SimpleMarkdownLint<CR>
 nnoremap <silent> <Plug>(simplemarkdown-next-heading) <Cmd>call simplemarkdown#NextHeading(1)<CR>
 nnoremap <silent> <Plug>(simplemarkdown-prev-heading) <Cmd>call simplemarkdown#NextHeading(-1)<CR>
 
@@ -182,6 +188,7 @@ augroup SimpleMarkdown
   autocmd!
   autocmd TextChanged,TextChangedI,BufWritePost *
     \ try | call simplemarkdown#OnTextChanged(str2nr(expand('<abuf>'))) | catch | endtry
+  autocmd BufWritePost * try | call simplemarkdown#OnWritten(str2nr(expand('<abuf>'))) | catch | endtry
   autocmd CursorMoved,CursorMovedI *
     \ try | call simplemarkdown#OnCursorMoved(win_getid()) | catch | endtry
   autocmd BufEnter,WinEnter * try | call simplemarkdown#OnContextChanged() | catch | endtry
