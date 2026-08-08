@@ -742,7 +742,17 @@ JSON over its stdin and stdout.  For diagnosis it also answers: >
 install.sh runs it on the freshly built binary before replacing a working one,
 so a build that compiles but does not work never reaches lib/.
 
-Every daemon in the simple* suite answers these three the same way.
+Every daemon in the simple* suite answers these three the same way.  This one
+adds three of its own: >
+
+  simplemarkdown-daemon --classes
+  simplemarkdown-daemon --preview FILE [WIDTH]
+  simplemarkdown-daemon --bench FILE [WIDTH] [RUNS]
+<
+--preview lays a file out on stdout, which is also what `make preview` uses to
+review a layout change.  --bench times a first render, the steady-state
+renders after it and the patch a one-word edit produces; `make bench` runs it
+over the project's fixture.
 
 VENDORED SUPERVISOR                                *simplemarkdown-simplecore*
 

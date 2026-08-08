@@ -29,6 +29,9 @@ test-daemon: build
 	./target/release/simplemarkdown-daemon --help >/dev/null
 	./target/release/simplemarkdown-daemon --version >/dev/null
 	./target/release/simplemarkdown-daemon --classes >/dev/null
+	@# `make bench` is a measurement, not an assertion, so it is not in the
+	@# gate — but that it still runs is.
+	./target/release/simplemarkdown-daemon --bench tests/fixtures/kitchen-sink.md 40 2 >/dev/null
 	printf '%s\n' '{"type":"ping","id":1}' \
 		| ./target/release/simplemarkdown-daemon \
 		| grep -qF '"type":"pong"'
@@ -124,6 +127,13 @@ test-protocol:
 # one server per buffer, and teardown.  Needs no omd installed.
 test-external:
 	vim -Nu NONE -n -i NONE -es -S tests/vim_external.vim
+
+# The first render, the steady-state renders after it (the gap between the two
+# is the highlight cache), and the patch one edit produces.  The CHANGELOG
+# publishes all three; this is how they are taken.  WIDTH= and RUNS= to change.
+bench: build
+	@./target/release/simplemarkdown-daemon --bench \
+		tests/fixtures/kitchen-sink.md $${WIDTH:-80} $${RUNS:-20}
 
 # Render the fixture to the terminal.  Handy when changing the layout code:
 # the diff of two runs is the whole review.

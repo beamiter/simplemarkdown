@@ -26,6 +26,9 @@ Usage: simplemarkdown-daemon [OPTION]
 With no option the daemon speaks the JSON-lines protocol on stdin/stdout.
 
   --preview FILE [WIDTH]  render FILE to plain text and exit (default width 80)
+  --bench FILE [WIDTH] [RUNS]
+                          time repeated renders of FILE and the patch one edit
+                          produces (default width 80, 20 runs)
   --classes               list every text-property class the renderer emits
   --self-test             check the renderer against a built-in document
   --version, -V           print the version
@@ -296,6 +299,13 @@ fn main() -> std::process::ExitCode {
                 std::process::ExitCode::FAILURE
             }
         },
+        Some("--bench") => match bench(&args[1..]) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("simplemarkdown-daemon: {message}");
+                std::process::ExitCode::FAILURE
+            }
+        },
         Some("--preview") => match preview(&args[1..]) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(message) => {
@@ -557,6 +567,64 @@ fn preview(args: &[String]) -> Result<(), String> {
     for line in render::render(&source, width.max(8), &protocol::Options::default()).lines {
         println!("{}", line.text);
     }
+    Ok(())
+}
+
+/// Time what the plugin actually does: a first render of a document, the
+/// steady-state renders that follow it — the gap between the two is the
+/// highlight cache — and the patch a one-word edit produces.
+///
+/// The CHANGELOG publishes figures for all three.  Without a way to take them
+/// in the tree they are folklore the moment anything changes, and `bench` sat
+/// in the Makefile's .PHONY list for a while with no rule behind it, which is
+/// the same problem wearing a hat.
+fn bench(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("--bench needs a file")?;
+    let number = |index: usize, fallback: usize| -> Result<usize, String> {
+        match args.get(index) {
+            None => Ok(fallback),
+            Some(text) => text
+                .parse::<usize>()
+                .map_err(|_| format!("not a number: {text}")),
+        }
+    };
+    let width = number(1, 80)?.max(8);
+    let runs = number(2, 20)?.max(1);
+
+    let source = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+    let opts = protocol::Options::default();
+
+    let mut times: Vec<f64> = Vec::with_capacity(runs);
+    let mut rows = 0usize;
+    for _ in 0..runs {
+        let started = Instant::now();
+        let output = render::render(&source, width, &opts);
+        times.push(started.elapsed().as_secs_f64() * 1000.0);
+        // Read something out of the result so the render cannot be optimised
+        // away, and so a rendering that collapses to nothing is visible.
+        rows = output.lines.len();
+    }
+
+    let first = times[0];
+    let mut rest: Vec<f64> = times[1.min(times.len() - 1)..].to_vec();
+    rest.sort_by(|a, b| a.partial_cmp(b).expect("no NaN"));
+    let median = rest[rest.len() / 2];
+
+    let before = render::render(&source, width, &opts);
+    let edited = source.replacen("the", "THE", 1);
+    let after = render::render(&edited, width, &opts);
+    let patch = diff(&before.lines, &after.lines);
+    let patch_bytes = serde_json::to_string(&patch).map_or(0, |text| text.len());
+    let full_bytes = serde_json::to_string(&after.lines).map_or(0, |text| text.len());
+
+    println!("{path}: {rows} rows at width {width}, {runs} runs");
+    println!("  first render     {first:8.2} ms");
+    println!("  steady state     {median:8.2} ms  (median of the rest)");
+    println!(
+        "  one-word edit    {:8} bytes as a patch of {} rows, against {full_bytes} for the document",
+        patch_bytes,
+        patch.lines.len()
+    );
     Ok(())
 }
 

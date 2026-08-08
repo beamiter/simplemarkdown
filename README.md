@@ -51,11 +51,13 @@ And mostly it hands over almost nothing. The daemon remembers the rows it last
 sent for a window and replies with the splice that turns them into the new
 ones, found by trimming the common prefix and then the common suffix — which is
 the shape of an edit, because typing in a paragraph reflows that paragraph and
-leaves everything above and below it byte-identical. Fenced blocks are
-memoised on their content for the same reason: syntax highlighting is the most
-expensive thing in a render and almost never what changed. On a 4700-row
-document of prose and code, a keystroke costs 2 ms in the daemon and moves one
-row over the wire.
+leaves everything above and below it byte-identical. Rows are compared on how
+they *look*, so pressing Enter — which moves every row below it in the
+row-to-source map and nothing on screen — is a splice plus one number, not a
+new document. Fenced blocks are memoised on their content for the same reason:
+syntax highlighting is the most expensive thing in a render and almost never
+what changed. On a 4700-row document of prose and code, a keystroke costs 2 ms
+in the daemon and moves one row over the wire.
 
 ## Install
 
@@ -97,12 +99,13 @@ follow a link or jump to the source line this row came from, `gx` open a link,
 `gO` contents, `]]`/`[[` next and previous heading, `g?` the list of keys
 actually in force. Each is a `<Plug>` you can move or drop on its own with
 `g:simplemarkdown_preview_mappings` — `{'toggle-task': ''}` keeps everything
-but `x`. Task toggling edits the
-Markdown source buffer immediately and works on nested/quoted task lists too.
-A preview only edits through a map for the exact source revision it rendered;
-if the source changed in the meantime, `x` refuses the stale action and
-refreshes. When several tabs preview the same buffer, edits refresh all of
-their sessions together.
+but `x`.
+
+Task toggling edits the Markdown source buffer immediately and works on
+nested/quoted task lists too. A preview only edits through a map for the exact
+source revision it rendered; if the source changed in the meantime, `x` refuses
+the stale action and refreshes. When several tabs preview the same buffer,
+edits refresh all of their sessions together.
 
 Links resolve to GitHub's heading slugs, so `#notes-part-one` finds
 `## Notes: part one!` and `#notes-1` finds the second `## Notes`;
@@ -197,6 +200,7 @@ treat them as single width.
 make check          # the gate: fmt, clippy, Rust tests, daemon, Vim suites
 make test           # the Rust tests alone
 make preview        # render the fixture to the terminal; WIDTH=100 to change
+make bench          # first render, steady state, and the size of one edit
 make check-protocol # Rust, Vim and the handshake agree on the protocol version
 make check-classes  # prove the Rust and Vim text-property class lists agree
 make test-links     # link following, from the preview and from the source
@@ -214,6 +218,7 @@ The daemon is usable on its own:
 
 ```sh
 ./target/release/simplemarkdown-daemon --preview README.md 100
+./target/release/simplemarkdown-daemon --bench README.md 100
 ./target/release/simplemarkdown-daemon --classes
 echo '{"type":"ping","id":1}' | ./target/release/simplemarkdown-daemon
 ```

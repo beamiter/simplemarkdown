@@ -70,6 +70,13 @@ All notable changes to this project are documented here.  The format follows
   means "keep what you have", exactly as an absent `lines` already meant "the
   patch is the whole answer".
 
+- **`make bench`.** It was in the Makefile's `.PHONY` list with no rule behind
+  it while the CHANGELOG published first-render and steady-state figures that
+  nothing in the tree could take. `simplemarkdown-daemon --bench FILE [WIDTH]
+  [RUNS]` times a first render, the steady-state renders after it — the gap
+  between the two is the highlight cache — and the patch a one-word edit
+  produces, against the size of the whole document.
+
 - **`:SimpleMarkdownHealth` reports the two facts it was missing.** It said
   which protocol the plugin speaks and stopped there, so a mismatch showed as
   `[ERROR]` with no second number and no remedy; it now names both versions and
