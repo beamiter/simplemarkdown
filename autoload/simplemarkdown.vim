@@ -2512,10 +2512,16 @@ enddef
 export def Toc()
   var key = CurrentPreviewSession()
   if key ==# '' || !has_key(sessions, key) || empty(get(sessions[key], 'toc', []))
-    # No preview to read the outline off.  Asking the backend for the headings
-    # is cheap — no width, no wrapping, no highlighting — and answering "what
-    # is in this document" by splitting the window and starting a render is a
-    # surprise: the question was about the document, not about the screen.
+    # In the preview itself there is nothing else to ask: its session is the
+    # document, and an empty outline means the document has no headings.
+    if IsPreviewBuffer(bufnr('%'))
+      Warn('no headings in this document.')
+      return
+    endif
+    # Otherwise ask the backend for the headings, which is cheap — no width, no
+    # wrapping, no highlighting.  Answering "what is in this document" by
+    # splitting the window and starting a render is a surprise: the question
+    # was about the document, not about the screen.
     SourceToc()
     return
   endif
