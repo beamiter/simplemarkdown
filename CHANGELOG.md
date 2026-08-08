@@ -37,6 +37,19 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **Link following that works on all three href shapes.** A bare `#anchor` and
+  the `#section` half of `other.md#section` were both documented and neither
+  had ever worked: the first was parsed as a file named `#anchor`, the second
+  was parsed and then dropped. Anchors now resolve against GitHub's heading
+  slug — the daemon sends one per table-of-contents entry, including the
+  `-1`/`-2` numbering for a heading that repeats — with the old prose match
+  kept as a fallback, so nothing that resolved before stops resolving.
+  `:SimpleMarkdownFollow` and `<Plug>(simplemarkdown-follow)` follow a link
+  from the Markdown source buffer too, finding it by pattern (inline,
+  reference, autolink, bare URL) rather than by asking the daemon, so no
+  preview window need be open. New `tests/vim_links.vim` / `make test-links`
+  covers every shape from both sides; there was no link test at all before.
+
 - **Global preview close.** `:SimpleMarkdownClose!` closes every in-Vim
   preview session without switching tabs or windows. It snapshots session
   identities before closing, so `WinClosed`/user callbacks cannot make it
@@ -89,6 +102,10 @@ All notable changes to this project are documented here.  The format follows
   an image is.
 - Text-property groups are applied in a stable order, so a patched render and a
   full one paint identically where two classes start at the same column.
+- `<CR>` in the preview now resolves a link exactly as `gx` does.  It asked for
+  the row's link and then re-tested that the cursor was inside it, discarding
+  the row fallback that lookup exists to provide, so the two keys disagreed
+  about the same row.
 
 ### Performance
 

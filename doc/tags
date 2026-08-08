@@ -6,6 +6,7 @@
 :SimpleMarkdownExternalOpen	simplemarkdown.txt	/*:SimpleMarkdownExternalOpen*
 :SimpleMarkdownExternalStatic	simplemarkdown.txt	/*:SimpleMarkdownExternalStatic*
 :SimpleMarkdownFocus	simplemarkdown.txt	/*:SimpleMarkdownFocus*
+:SimpleMarkdownFollow	simplemarkdown.txt	/*:SimpleMarkdownFollow*
 :SimpleMarkdownHealth	simplemarkdown.txt	/*:SimpleMarkdownHealth*
 :SimpleMarkdownLog	simplemarkdown.txt	/*:SimpleMarkdownLog*
 :SimpleMarkdownOpen	simplemarkdown.txt	/*:SimpleMarkdownOpen*
@@ -62,6 +63,7 @@ simplemarkdown-highlighting	simplemarkdown.txt	/*simplemarkdown-highlighting*
 simplemarkdown-incremental	simplemarkdown.txt	/*simplemarkdown-incremental*
 simplemarkdown-installation	simplemarkdown.txt	/*simplemarkdown-installation*
 simplemarkdown-introduction	simplemarkdown.txt	/*simplemarkdown-introduction*
+simplemarkdown-links	simplemarkdown.txt	/*simplemarkdown-links*
 simplemarkdown-mappings	simplemarkdown.txt	/*simplemarkdown-mappings*
 simplemarkdown-markdown	simplemarkdown.txt	/*simplemarkdown-markdown*
 simplemarkdown-simplecore	simplemarkdown.txt	/*simplemarkdown-simplecore*

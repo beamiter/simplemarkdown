@@ -235,6 +235,12 @@ pub struct Prop(pub usize, pub usize, pub &'static str);
 pub struct TocEntry {
     pub level: u8,
     pub text: String,
+    /// GitHub's anchor for this heading, so `[x](#some-heading)` can be
+    /// resolved by comparing slugs instead of guessing at the prose.  Computed
+    /// here rather than in Vim because only the renderer knows the plain text
+    /// of a heading that contains inline markup, and only it sees the whole
+    /// document, which is what the `-1`/`-2` de-duplication needs.
+    pub anchor: String,
     /// 1-based source line of the heading.
     pub src: u32,
     /// 1-based rendered row of the heading.

@@ -87,6 +87,7 @@ own documentation never replaces a working one.
 :SimpleMarkdownFocus     " jump into it
 :SimpleMarkdownToc       " headings, in a popup
 :SimpleMarkdownToggleTask " toggle the task under either cursor
+:SimpleMarkdownFollow    " follow the link under the cursor, source side too
 :SimpleMarkdownStyle ascii
 :SimpleMarkdownHealth
 ```
@@ -99,6 +100,15 @@ A preview only edits through a map for the exact source revision it rendered;
 if the source changed in the meantime, `x` refuses the stale action and
 refreshes. When several tabs preview the same buffer, edits refresh all of
 their sessions together.
+
+Links resolve to GitHub's heading slugs, so `#notes-part-one` finds
+`## Notes: part one!` and `#notes-1` finds the second `## Notes`;
+`other.md#section` opens the file and moves to that section. Following works
+from the source buffer too, with no preview open — bind it to `gf` if you like:
+
+```vim
+autocmd FileType markdown nmap <buffer> gf <Plug>(simplemarkdown-follow)
+```
 
 Manual refresh follows the same document scope: `:SimpleMarkdownRefresh`
 skips the debounce for every tab showing the current source. Use

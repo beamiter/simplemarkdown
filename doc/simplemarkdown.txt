@@ -115,6 +115,19 @@ second one.
                         refreshed. Every tab previewing that source refreshes
                         after the edit.
 
+                                                        *:SimpleMarkdownFollow*
+:SimpleMarkdownFollow   Follow the link under the cursor.  In the preview that
+                        is what `gx` does; in the Markdown source the link is
+                        found by pattern — inline, reference, autolink or bare
+                        URL — so no preview window has to be open: >
+
+                            autocmd FileType markdown
+                              \ nmap <buffer> gf <Plug>(simplemarkdown-follow)
+<
+                        With the cursor on no link the line's leftmost link is
+                        taken, which is what pressing the key on a line with one
+                        link means.  See |simplemarkdown-links|.
+
                                                         *:SimpleMarkdownResize*
 :SimpleMarkdownResize [{columns}]
                         Resize the preview window.  With no argument, re-apply
@@ -183,24 +196,41 @@ Plugs, for your own bindings: >
     <Plug>(simplemarkdown-focus)
     <Plug>(simplemarkdown-toc)
     <Plug>(simplemarkdown-toggle-task)
+    <Plug>(simplemarkdown-follow)
     <Plug>(simplemarkdown-external)
 <
 Inside the preview window, unless |g:simplemarkdown_default_mappings| is off: >
 
     q       close the preview
     r       re-render this document in every tab now
-    <CR>    follow the link under the cursor; with no link, jump the source
-            window to the line this row came from
+    <CR>    follow the link on this row; with no link, jump the source window
+            to the line this row came from
     gx      follow the link on this row
     gO      show the table of contents
     x       check/uncheck the task on this row in the Markdown source
     ]]      next heading
     [[      previous heading
 <
+`<CR>` and `gx` resolve a link the same way: the one under the cursor, or —
+when the cursor is not on one — the row's leftmost link.
+
+                                                        *simplemarkdown-links*
 A link to `http:`, `https:`, `ftp:` or `mailto:` is handed to
 `netrw#BrowseX()`, or to `xdg-open`/`open` if netrw is not loaded.  A relative
 link is resolved against the source file's directory and opened in the source
-window.  A bare `#anchor` jumps to that heading.
+window.
+
+A `#anchor`, alone or after a file name, is matched against GitHub's heading
+slug: the heading lower-cased, with everything that is not a letter, digit,
+`_` or `-` removed and each remaining space turned into `-`, so `## Notes:
+part one!` answers to `#notes-part-one`.  A heading repeated in one document
+is numbered as GitHub numbers it, `#notes`, `#notes-1`, `#notes-2`.  A link
+that matches no slug falls back to matching the heading's words, which is what
+this did before slugs existed.  `other.md#section` opens the file and then
+moves to that section; an anchor that names no heading says so and stays put.
+
+Following a link is not limited to the preview window — see
+|:SimpleMarkdownFollow| for the source-buffer side of it.
 
 ==============================================================================
 6. CONFIGURATION                                *simplemarkdown-configuration*

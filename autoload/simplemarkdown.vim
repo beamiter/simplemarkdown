@@ -1640,25 +1640,44 @@ enddef
 
 
 def Follow(session: dict<any>, href: string)
+  FollowHref(href, session.src_bufnr, session)
+enddef
+
+
+# Follow `href` as it is written in the document held by `src_bufnr`.
+#
+# `session` is the preview session to move within when the link is a bare
+# `#anchor`; it is empty when the link was followed from the source buffer,
+# where there may be no preview at all and the source cursor moves instead.
+def FollowHref(href: string, src_bufnr: number, session: dict<any> = {})
   if href =~? '^\(https\?\|ftp\|mailto\):'
     simplemarkdown#external#Browse(href)
     return
   endif
 
-  # A relative link is a file in the source document's directory; opening it in
-  # the source window keeps the preview where it is.
-  var base = fnamemodify(bufname(session.src_bufnr), ':p:h')
-  var target = href
-  var anchor = ''
-  var hash = stridx(target, '#')
-  if hash >= 0
-    anchor = target[hash + 1 : ]
-    target = target[0 : hash - 1]
-  endif
+  # strpart(), not `href[0 : hash - 1]`: a negative Vim slice index counts from
+  # the end, so a bare `#anchor` — hash at 0, hence `[0 : -1]` — sliced that way
+  # is the whole string, and the anchor is then looked for as a file called
+  # `#anchor` in the document's directory.
+  var hash = stridx(href, '#')
+  var target = hash >= 0 ? strpart(href, 0, hash) : href
+  var anchor = hash >= 0 ? strpart(href, hash + 1) : ''
+
   if target ==# ''
-    JumpToHeading(session, anchor)
+    if anchor ==# ''
+      return
+    endif
+    if !empty(session)
+      JumpToHeading(session, anchor)
+    else
+      JumpToAnchorHere(anchor)
+    endif
     return
   endif
+
+  # A relative link is a file in the source document's directory; opening it in
+  # the source window keeps the preview where it is.
+  var base = fnamemodify(bufname(src_bufnr), ':p:h')
   var path = target =~# '^/' ? target : base .. '/' .. target
   if !filereadable(path)
     echohl WarningMsg
@@ -1666,21 +1685,162 @@ def Follow(session: dict<any>, href: string)
     echohl None
     return
   endif
-  if WindowExists(session.src_winid)
+  if !empty(session) && WindowExists(session.src_winid)
     win_gotoid(session.src_winid)
   endif
   execute 'edit ' .. fnameescape(path)
+  # `other.md#section` means that section, not the top of the file.
+  if anchor !=# ''
+    JumpToAnchorHere(anchor)
+  endif
 enddef
 
 
 def JumpToHeading(session: dict<any>, anchor: string)
-  var wanted = tolower(substitute(anchor, '-', ' ', 'g'))
-  for entry in session.toc
-    if tolower(get(entry, 'text', '')) ==# wanted
-      GoToRow(session, get(entry, 'row', 0), get(entry, 'src', 0))
-      return
+  var entry = TocEntryForAnchor(session.toc, anchor)
+  if empty(entry)
+    AnchorWarning(anchor)
+    return
+  endif
+  GoToRow(session, get(entry, 'row', 0), get(entry, 'src', 0))
+enddef
+
+
+# The heading `#anchor` names, in three passes.  The daemon's own slug first,
+# because only it de-duplicates repeated headings the way GitHub does; then the
+# slug computed here, so a daemon older than the `anchor` field still resolves
+# links; and last the prose match this used to do alone, so a link written
+# against a heading's words rather than its slug keeps working.
+def TocEntryForAnchor(toc: list<any>, anchor: string): dict<any>
+  var wanted = tolower(anchor)
+  for entry in toc
+    if get(entry, 'anchor', '') ==# wanted
+      return entry
     endif
   endfor
+  for entry in toc
+    if Slug(get(entry, 'text', '')) ==# wanted
+      return entry
+    endif
+  endfor
+  var prose = substitute(wanted, '-', ' ', 'g')
+  for entry in toc
+    if tolower(get(entry, 'text', '')) ==# prose
+      return entry
+    endif
+  endfor
+  return {}
+enddef
+
+
+# GitHub's heading anchor, the Vim counterpart of `slug()` in render.rs: the
+# daemon slugs the document it rendered, but `other.md#section` lands in a
+# buffer no daemon has seen and has to be resolved there too.  ASCII is treated
+# identically; a non-ASCII character is kept rather than classified, which is
+# right for the letters and ideographs headings are made of and wrong only for
+# non-ASCII punctuation, where the prose fallback still applies.
+def Slug(text: string): string
+  var out = ''
+  for ch in split(trim(text), '\zs')
+    if ch =~# '^[[:alnum:]_-]$' || char2nr(ch) > 127
+      out ..= tolower(ch)
+    elseif ch =~# '^\s$'
+      out ..= '-'
+    endif
+  endfor
+  return out
+enddef
+
+
+# Every ATX and Setext heading in `buf`, as `[line, text]`.  Fenced code is
+# skipped, or a `# comment` in a shell block would answer to `#comment`.
+def HeadingsIn(buf: number): list<list<any>>
+  var lines = getbufline(buf, 1, '$')
+  var found: list<list<any>> = []
+  var fence = ''
+  var lnum = 0
+  for line in lines
+    lnum += 1
+    var marker = trim(matchstr(line, '^\s\{0,3}\%(`\{3,}\|\~\{3,}\)'))
+    if fence !=# ''
+      if marker !=# '' && marker[0] ==# fence[0]
+        fence = ''
+      endif
+      continue
+    elseif marker !=# ''
+      fence = marker
+      continue
+    endif
+    var atx = matchlist(line, '^\s\{0,3}#\{1,6}\s\+\(.\{-}\)\s*#*\s*$')
+    if !empty(atx)
+      found->add([lnum, atx[1]])
+      continue
+    endif
+    # A Setext underline names the paragraph line above it.  `---` under a
+    # paragraph really is a heading in CommonMark, so only a blank or
+    # block-marker line above rules it out.
+    if lnum > 1 && line =~# '^\s\{0,3}\%(=\+\|-\+\)\s*$'
+      var above = lines[lnum - 2]
+      if above !~# '^\s*$'
+          && above !~# '^\s\{0,3}\%([-*+>#]\|\d\+[.)]\)\s'
+          && above !~# '^\s\{0,3}\%(`\{3,}\|\~\{3,}\)'
+        found->add([lnum - 1, trim(above)])
+      endif
+    endif
+  endfor
+  return found
+enddef
+
+
+# Enough inline markup stripped to match what the renderer's `plain()` would
+# have produced for the same heading, since that is what the daemon slugs.
+def PlainInline(text: string): string
+  var out = substitute(text, '!\=\[\([^]]*\)\]([^()]*)', '\1', 'g')
+  out = substitute(out, '!\=\[\([^]]*\)\]\[[^]]*\]', '\1', 'g')
+  out = substitute(out, '[`*]\+\|\~\~', '', 'g')
+  return trim(out)
+enddef
+
+
+# The source line of the heading `anchor` names in `buf`, or 0.
+def HeadingLineForAnchor(buf: number, anchor: string): number
+  var wanted = tolower(anchor)
+  var prose = substitute(wanted, '-', ' ', 'g')
+  var seen: dict<number> = {}
+  var fallback = 0
+  for [lnum, raw] in HeadingsIn(buf)
+    var text = PlainInline(raw)
+    var base = Slug(text)
+    # The daemon's de-duplication, repeated here: `#notes-1` is the second
+    # `## Notes`, not a heading that happens to end in `-1`.
+    seen[base] = get(seen, base, 0) + 1
+    var unique = seen[base] == 1 ? base : printf('%s-%d', base, seen[base] - 1)
+    if unique ==# wanted
+      return lnum
+    endif
+    if fallback == 0 && tolower(text) ==# prose
+      fallback = lnum
+    endif
+  endfor
+  return fallback
+enddef
+
+
+def JumpToAnchorHere(anchor: string)
+  var lnum = HeadingLineForAnchor(bufnr('%'), anchor)
+  if lnum <= 0
+    AnchorWarning(anchor)
+    return
+  endif
+  cursor(lnum, 1)
+  normal! zz
+enddef
+
+
+def AnchorWarning(anchor: string)
+  echohl WarningMsg
+  echom printf('[SimpleMarkdown] no heading matching #%s', anchor)
+  echohl None
 enddef
 
 
@@ -1705,10 +1865,11 @@ export def Activate()
   var session = sessions[key]
   var row = line('.')
   var column = col('.')
+  # No second exactness test: LinkAtCursor() already falls back to the row's
+  # link on purpose, and re-testing here threw that fallback away, so <CR> and
+  # `gx` disagreed about the same row.
   var link = LinkAtCursor(session, row, column)
-  var start = get(link, 'col', 0)
-  var on_link = !empty(link) && column >= start && column < start + get(link, 'len', 0)
-  if on_link
+  if !empty(link)
     Follow(session, link.href)
     return
   endif
@@ -1723,6 +1884,112 @@ export def Activate()
   win_gotoid(session.src_winid)
   cursor(src, 1)
   normal! zz
+enddef
+
+
+# Inline links, in the order they are tried.  Parsed rather than asked of the
+# daemon: following a link from the source buffer must work with no preview
+# open, and a round trip would make the jump wait on a render.
+const SOURCE_LINK_PATTERNS: list<string> = [
+  '!\=\[[^]]*\]([^()]*)',
+  '!\=\[[^]]*\]\[[^]]*\]',
+  '<\a[[:alnum:]+.-]*:[^ \t<>]\+>',
+  '\%(https\?\|ftp\)://[^ \t<>"''`]\+',
+]
+
+
+# `[label]: dest` anywhere in the document.  Labels are case-insensitive and
+# the definition may sit above or below the reference, so the whole buffer is
+# searched.
+def LinkDefinition(buf: number, label: string): string
+  var wanted = tolower(trim(label))
+  if wanted ==# ''
+    return ''
+  endif
+  for line in getbufline(buf, 1, '$')
+    var parts = matchlist(line, '^\s\{0,3}\[\([^]]\+\)\]:\s*\(\S\+\)')
+    if !empty(parts) && tolower(trim(parts[1])) ==# wanted
+      return parts[2] =~# '^<.*>$' ? parts[2][1 : -2] : parts[2]
+    endif
+  endfor
+  return ''
+enddef
+
+
+def HrefOfMatch(matched: string, buf: number): string
+  if matched =~# '^<'
+    return matched[1 : -2]
+  endif
+  if matched =~# '^!\=\[[^]]*\]('
+    # A destination may carry a title — `(./a.md "A")` — and may be wrapped in
+    # angle brackets so that it can contain spaces.
+    var dest = trim(matchstr(matched, '](\zs[^()]*\ze)$'))
+    if dest =~# '^<.*>$'
+      return dest[1 : -2]
+    endif
+    return matchstr(dest, '^\S*')
+  endif
+  if matched =~# '^!\=\[[^]]*\]\['
+    var label = matchstr(matched, '\]\[\zs[^]]*\ze\]$')
+    if label ==# ''
+      # A collapsed reference — `[label][]` — names itself.
+      label = matchstr(matched, '^!\=\[\zs[^]]*\ze\]')
+    endif
+    return LinkDefinition(buf, label)
+  endif
+  return matched
+enddef
+
+
+def SourceLinkAtCursor(buf: number, lnum: number, column: number): string
+  var line = get(getbufline(buf, lnum), 0, '')
+  var first = ''
+  var first_at = -1
+  for pattern in SOURCE_LINK_PATTERNS
+    var start = 0
+    while start <= len(line)
+      var [matched, from, to] = matchstrpos(line, pattern, start)
+      if from < 0
+        break
+      endif
+      var href = HrefOfMatch(matched, buf)
+      if href !=# ''
+        # Byte columns, 1-based, the same convention as the preview's spans.
+        if column >= from + 1 && column <= to
+          return href
+        endif
+        if first_at < 0 || from < first_at
+          first = href
+          first_at = from
+        endif
+      endif
+      start = to > from ? to : from + 1
+    endwhile
+  endfor
+  # Nothing under the cursor: the line's leftmost link, which is what a user
+  # pressing the key on a line with one link means — the same fallback the
+  # preview makes in LinkAtCursor().
+  return first
+enddef
+
+
+# `:SimpleMarkdownFollow`.  In the preview this is `gx`; in a Markdown source
+# buffer it follows the link the cursor is on, so `nmap <buffer> gf` can be
+# bound to it and a docs tree can be walked without opening a preview at all.
+export def FollowUnderCursor()
+  if SessionForPreviewWindow(win_getid()) !=# ''
+    OpenLink()
+    return
+  endif
+  var buf = bufnr('%')
+  var href = SourceLinkAtCursor(buf, line('.'), col('.'))
+  if href ==# ''
+    echohl WarningMsg
+    echom '[SimpleMarkdown] no link under the cursor.'
+    echohl None
+    return
+  endif
+  FollowHref(href, buf)
 enddef
 
 

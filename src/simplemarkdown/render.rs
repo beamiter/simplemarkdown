@@ -27,6 +27,7 @@ use pulldown_cmark::{
     Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, MetadataBlockKind,
     Options as MdOptions, Parser, Tag, TagEnd,
 };
+use std::collections::HashMap;
 use std::ops::Range;
 use unicode_width::UnicodeWidthStr;
 
@@ -81,6 +82,7 @@ pub fn render(source: &str, width: usize, opts: &Options) -> Output {
         list_depth: 0,
         tight: false,
         footnotes: Vec::new(),
+        anchors: HashMap::new(),
     };
 
     // The top level is walked here rather than through `blocks()` so each
@@ -166,11 +168,28 @@ struct Renderer<'a> {
     /// Footnote labels in first-reference order, so `[^note]` renders as the
     /// same number in the body and at the definition.
     footnotes: Vec<String>,
+    /// How many headings have already claimed each slug, so the second `## Notes`
+    /// becomes `notes-1` exactly as it does on GitHub.
+    anchors: HashMap<String, usize>,
 }
 
 // ─────────────────────────── emitting ───────────────────────────
 
 impl Renderer<'_> {
+    /// [`slug`] for `text`, suffixed so no two headings in one document share an
+    /// anchor.  A repeated heading is common in a changelog or an API reference,
+    /// and a link to the second one has to be able to say so.
+    fn unique_anchor(&mut self, text: &str) -> String {
+        let base = slug(text);
+        let seen = self.anchors.entry(base.clone()).or_insert(0);
+        *seen += 1;
+        if *seen == 1 {
+            base
+        } else {
+            format!("{base}-{}", *seen - 1)
+        }
+    }
+
     fn src_of(&self, offset: usize) -> u32 {
         self.line_starts.partition_point(|start| *start <= offset) as u32
     }
@@ -487,9 +506,12 @@ impl Renderer<'_> {
         }
         self.pop_frame();
 
+        let text = plain(runs);
+        let anchor = self.unique_anchor(&text);
         self.toc.push(TocEntry {
             level,
-            text: plain(runs),
+            text,
+            anchor,
             src,
             row: row_number,
         });
@@ -1241,6 +1263,28 @@ fn count_items(ev: &Events, from: usize) -> usize {
     items
 }
 
+/// GitHub's heading anchor: lower-case the text, drop everything that is not
+/// alphanumeric, `_` or `-`, and turn each remaining space into a `-`.  Spaces
+/// are not collapsed — `## A & B` is `#a--b` on GitHub, because the `&` is
+/// removed after the spaces around it have already become dashes.
+///
+/// The dialects differ (GitLab strips consecutive dashes, pandoc drops leading
+/// digits); GitHub's is the one a Markdown file in a repository is written
+/// against, and doc/simplemarkdown.txt says so.  A link that matches no slug
+/// still falls back to a fuzzy text match on the Vim side, so picking one
+/// dialect costs nothing that worked before.
+pub fn slug(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.trim().chars() {
+        if ch.is_alphanumeric() || ch == '_' || ch == '-' {
+            out.extend(ch.to_lowercase());
+        } else if ch.is_whitespace() {
+            out.push('-');
+        }
+    }
+    out
+}
+
 fn plain(runs: &[Run]) -> String {
     let mut out = String::new();
     for run in runs {
@@ -1623,6 +1667,30 @@ mod tests {
         assert_eq!(out.toc[0].src, 1);
         assert_eq!(out.toc[1].src, 5);
         assert_eq!(out.lines[out.toc[1].row as usize - 1].text, "▌ Two");
+    }
+
+    #[test]
+    fn headings_carry_a_github_anchor() {
+        let out = render(
+            "# Getting *started*\n\n## Notes: part one!\n\n## A & B\n",
+            60,
+            &Options::default(),
+        );
+        let anchors: Vec<&str> = out.toc.iter().map(|entry| entry.anchor.as_str()).collect();
+        // The `&` is removed after the spaces around it have become dashes,
+        // which is why `A & B` is `a--b` and not `a-b`.
+        assert_eq!(anchors, ["getting-started", "notes-part-one", "a--b"]);
+    }
+
+    #[test]
+    fn a_repeated_heading_gets_a_numbered_anchor() {
+        let out = render(
+            "## Notes\n\n## Notes\n\n## Notes\n",
+            60,
+            &Options::default(),
+        );
+        let anchors: Vec<&str> = out.toc.iter().map(|entry| entry.anchor.as_str()).collect();
+        assert_eq!(anchors, ["notes", "notes-1", "notes-2"]);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-external clean vim-core defcompile check-classes preview bench core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-external clean vim-core defcompile check-classes preview bench core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon check-classes defcompile vim-core test-vim test-external
+check: core-verify fmt clippy test test-daemon check-classes defcompile vim-core test-vim test-links test-external
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -58,6 +58,12 @@ check-classes: build
 
 test-vim: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_smoke.vim
+
+# Link following: bare `#anchor`, `other.md#section`, relative and reference
+# links, followed from the preview window and from the source buffer.  Its own
+# file because it needs a docs tree on disk, not the smoke test's one buffer.
+test-links: build
+	vim -Nu NONE -n -i NONE -es -S tests/vim_links.vim
 
 # The external (browser) preview, against a stand-in for omd: port allocation,
 # one server per buffer, and teardown.  Needs no omd installed.
