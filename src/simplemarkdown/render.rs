@@ -391,14 +391,20 @@ impl Renderer<'_> {
                 *i += 1;
             }
             Event::Start(Tag::CodeBlock(kind)) => {
-                let info = match kind {
-                    CodeBlockKind::Fenced(info) => info.to_string(),
-                    CodeBlockKind::Indented => String::new(),
+                // An opening fence is a source line of its own, so the code
+                // starts one line below the block; an indented block has no
+                // marker and starts on the block's own line.  Assuming the
+                // fence for both put every row of an indented block one line
+                // too far, which is <CR> landing on the next line and scroll
+                // sync drifting through the whole block.
+                let (info, first) = match kind {
+                    CodeBlockKind::Fenced(info) => (info.to_string(), src + 1),
+                    CodeBlockKind::Indented => (String::new(), src),
                 };
                 *i += 1;
                 let code = self.raw_text(ev, i);
                 *i += 1;
-                self.code_block(&info, &code, src);
+                self.code_block(&info, &code, first);
             }
             Event::Start(Tag::List(start)) => {
                 let start = *start;
@@ -427,7 +433,8 @@ impl Renderer<'_> {
                 let raw = self.raw_text(ev, i);
                 *i += 1;
                 if self.opts.frontmatter {
-                    self.code_block(lang, &raw, src);
+                    // The `---` or `+++` delimiter is a line of its own.
+                    self.code_block(lang, &raw, src + 1);
                 }
             }
             Event::Start(Tag::FootnoteDefinition(label)) => {
@@ -834,7 +841,9 @@ impl Renderer<'_> {
 // ─────────────────────────── code blocks ───────────────────────────
 
 impl Renderer<'_> {
-    fn code_block(&mut self, info: &str, code: &str, src: u32) {
+    /// `first_src` is the source line the code's first line is on — not the
+    /// block's, which for a fenced block is the opening fence.
+    fn code_block(&mut self, info: &str, code: &str, first_src: u32) {
         self.gap();
         let glyphs = self.glyphs;
         let avail = self.avail();
@@ -870,7 +879,7 @@ impl Renderer<'_> {
         for (offset, line) in lines.iter().enumerate() {
             let empty: &[(usize, usize, &'static str)] = &[];
             let spans = highlighted.get(offset).map_or(empty, Vec::as_slice);
-            let source_line = src + 1 + offset as u32;
+            let source_line = first_src + offset as u32;
 
             let chunks = if self.opts.code_wrap {
                 split_by_width(line, body_width, body_width.saturating_sub(2).max(1))
@@ -1667,6 +1676,48 @@ mod tests {
         assert_eq!(out.toc[0].src, 1);
         assert_eq!(out.toc[1].src, 5);
         assert_eq!(out.lines[out.toc[1].row as usize - 1].text, "▌ Two");
+    }
+
+    /// The source line each row says it came from, paired with its text.
+    fn sources(out: &Output) -> Vec<(&str, u32)> {
+        out.lines
+            .iter()
+            .map(|line| (line.text.as_str(), line.src))
+            .collect()
+    }
+
+    fn source_of(rows: &[(&str, u32)], needle: &str) -> u32 {
+        rows.iter()
+            .find(|(text, _)| text.contains(needle))
+            .unwrap_or_else(|| panic!("no row containing {needle:?} in {rows:?}"))
+            .1
+    }
+
+    #[test]
+    fn code_rows_map_to_the_lines_they_came_from() {
+        // A fenced block starts one line below its opening fence; an indented
+        // block has no marker at all and starts on its own line.  Treating both
+        // as fenced put every row of an indented block one line too far, so
+        // <CR> on it jumped to the line below and scroll sync drifted through
+        // the whole block.
+        let fenced = render(
+            "para\n\n```rust\nfn one() {}\nfn two() {}\n```\n\ntail\n",
+            40,
+            &Options::default(),
+        );
+        let rows = sources(&fenced);
+        assert_eq!(source_of(&rows, "fn one"), 4);
+        assert_eq!(source_of(&rows, "fn two"), 5);
+
+        let indented = render(
+            "para\n\n    indented one\n    indented two\n\ntail\n",
+            40,
+            &Options::default(),
+        );
+        let rows = sources(&indented);
+        assert_eq!(source_of(&rows, "indented one"), 3);
+        assert_eq!(source_of(&rows, "indented two"), 4);
+        assert_eq!(source_of(&rows, "tail"), 6);
     }
 
     #[test]

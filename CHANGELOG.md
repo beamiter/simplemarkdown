@@ -125,6 +125,23 @@ All notable changes to this project are documented here.  The format follows
 
 ### Fixed
 
+- **An indented code block no longer maps one line too far.** Every row of one
+  reported the source line below the one it came from, because the mapping
+  assumed an opening fence — which an indented block does not have. `<CR>` on
+  the first line of such a block jumped to the second, and scroll sync drifted
+  by a line through the whole block. Front matter, which does have a delimiter
+  line, is unchanged.
+
+- **Withdrawn render ids no longer accumulate.** A cancel is normally removed by
+  the render it names; one that loses the race against its own reply was never
+  removed at all, and a typing session issues a cancel per keystroke burst. The
+  set is now bounded to the recent ids, which are the only ones still
+  reachable.
+
+- **A full session table evicts the stalest session**, not whichever one the
+  hash order offered first — which could drop the window being looked at and
+  keep one closed hours ago.
+
 - **A render discarded for a stale width no longer leaves the preview behind.**
   Resizing the window while a render was in flight threw the reply away and
   stopped there, so the preview kept showing the older document until the next

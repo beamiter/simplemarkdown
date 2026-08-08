@@ -114,6 +114,36 @@ fn fingerprint<T: std::hash::Hash>(value: &T) -> u64 {
 /// without bound.  `forget` is the tidy path; this is the backstop.
 const MAX_SESSIONS: usize = 32;
 
+/// How many withdrawn render ids to remember.  An entry is normally removed by
+/// the render it cancels, but a cancel that loses the race against its own
+/// reply has nothing left to remove it — and a long typing session cancels a
+/// render per keystroke burst, so those strays are a slow leak.
+const MAX_CANCELLED: u64 = 256;
+
+/// Remember that render `id` has been withdrawn, forgetting ids far enough
+/// behind it to be unreachable.  Request ids only ever increase, so an id more
+/// than a window behind the newest cancel is one whose render either ran long
+/// ago or never will.  Forgetting one costs at worst a superseded render the
+/// client then discards; remembering it for ever costs memory that is never
+/// released.
+fn note_cancelled(cancelled: &mut HashSet<u64>, id: u64) {
+    cancelled.insert(id);
+    if cancelled.len() as u64 > MAX_CANCELLED {
+        let floor = id.saturating_sub(MAX_CANCELLED);
+        cancelled.retain(|pending| *pending >= floor);
+    }
+}
+
+/// The session to drop when the table is full: the one whose last render is
+/// oldest.  `keys().next()` is whatever the hash order happens to offer, which
+/// can evict the window the user is looking at and leave one closed hours ago.
+fn stalest_session(sessions: &HashMap<String, Session>) -> Option<String> {
+    sessions
+        .iter()
+        .min_by_key(|(_, session)| session.id)
+        .map(|(key, _)| key.clone())
+}
+
 type Sessions = Arc<Mutex<HashMap<String, Session>>>;
 
 /// The rows that changed, as one splice.
@@ -346,7 +376,7 @@ async fn serve() -> std::io::Result<()> {
                 .await;
             }
             Request::Cancel { id } => {
-                cancelled.lock().await.insert(id);
+                note_cancelled(&mut *cancelled.lock().await, id);
             }
             Request::Forget { session } => {
                 sessions.lock().await.remove(&session);
@@ -437,7 +467,7 @@ async fn serve() -> std::io::Result<()> {
                             };
                             if sessions.len() >= MAX_SESSIONS
                                 && !sessions.contains_key(&key)
-                                && let Some(evict) = sessions.keys().next().cloned()
+                                && let Some(evict) = stalest_session(&sessions)
                             {
                                 sessions.remove(&evict);
                             }
@@ -794,6 +824,46 @@ mod tests {
         assert!(patch.lines.is_empty() && patch.del == 0);
         let applied = apply(&before.lines, &patch);
         assert_eq!(srcs(&applied), srcs(&after.lines));
+    }
+
+    #[test]
+    fn withdrawn_render_ids_do_not_accumulate() {
+        // A cancel that loses the race against its own reply is never removed
+        // by the render it names, and a typing session issues one per keystroke
+        // burst: unbounded, this is a leak for the life of the daemon.
+        let mut cancelled = HashSet::new();
+        for id in 1..=10_000u64 {
+            note_cancelled(&mut cancelled, id);
+        }
+        assert!(
+            cancelled.len() as u64 <= MAX_CANCELLED + 1,
+            "{} ids remembered",
+            cancelled.len()
+        );
+        // What is remembered has to be the recent end of the range: those are
+        // the renders that might still be queued.
+        assert!(cancelled.contains(&10_000));
+        assert!(cancelled.contains(&9_999));
+        assert!(!cancelled.contains(&1));
+    }
+
+    #[test]
+    fn the_stalest_session_is_the_one_evicted() {
+        let mut sessions = HashMap::new();
+        for (key, id) in [("busy", 90u64), ("closed-hours-ago", 3), ("idle", 40)] {
+            sessions.insert(
+                key.to_string(),
+                Session {
+                    id,
+                    rows: Vec::new(),
+                    indexes: Indexes::default(),
+                },
+            );
+        }
+        assert_eq!(
+            stalest_session(&sessions).as_deref(),
+            Some("closed-hours-ago")
+        );
     }
 
     #[test]
