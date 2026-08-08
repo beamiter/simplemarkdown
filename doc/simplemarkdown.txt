@@ -597,10 +597,21 @@ paragraph and leaves everything above and below it identical.  A keystroke in a
 five-thousand-row document then moves one row over the wire instead of five
 thousand, and Vim repaints one row's properties instead of all of them.
 
-The reply's row count is the checksum.  If the buffer disagrees with it after a
-splice the two copies have drifted, and Vim asks for a whole document rather
-than redrawing something already wrong.  |g:simplemarkdown_incremental| turns
-the whole mechanism off.
+Two rows count as the same row when they *look* the same.  The source line a
+row came from is deliberately not part of that comparison: it moves on every
+row below an inserted line while nothing on screen moves at all, and comparing
+it left no common suffix for `Enter`, `o`, `dd` or any paste — half of all
+editing — so those edits used to send the whole document.  The row → source map
+is repaired instead by its own correction, which for an insertion or a deletion
+is a single number ("everything from row N on moved by two") whatever the size
+of the document.
+
+The reply carries two checksums, the row count and the sum of the source map,
+because the rows and the map are spliced independently and a map that has
+drifted while the text has not would otherwise stay invisible until it moved
+the cursor — or an `x` — to the wrong line.  If either disagrees after a splice
+Vim asks for a whole document rather than redrawing something already wrong.
+|g:simplemarkdown_incremental| turns the whole mechanism off.
 
 Three more details worth knowing if you are reading the source:
 
@@ -629,6 +640,12 @@ is almost never what changed.
 "daemon simplemarkdown-daemon not found"
     The backend has not been built.  Run `./install.sh` in the plugin
     directory, then |:SimpleMarkdownRestart|.
+
+"Daemon speaks protocol vN, this plugin speaks vM"
+    The Vim files were updated without the backend being rebuilt, which is
+    what a plugin manager does by default.  The preview says so in the window
+    rather than drawing a document laid out to a format it cannot read: run
+    `./install.sh`, then |:SimpleMarkdownRestart|.
 
 Tables and code frames are misaligned
     Your terminal renders East Asian Ambiguous width characters as double

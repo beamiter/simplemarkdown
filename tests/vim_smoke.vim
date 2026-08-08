@@ -111,7 +111,7 @@ SimpleMarkdownOpen
 call assert_true(s:PreviewWin() > 0, 'the preview window opens')
 call assert_true(s:Wait('simplemarkdown#core#Ready()', 5000),
       \ 'the daemon completes its handshake')
-call assert_equal(2, simplemarkdown#core#Protocol(), 'protocol v2 is negotiated')
+call assert_equal(3, simplemarkdown#core#Protocol(), 'protocol v3 is negotiated')
 call assert_true(simplemarkdown#core#HasCap('render'), 'the render capability is advertised')
 call assert_true(simplemarkdown#core#HasCap('incremental'),
       \ 'the daemon advertises incremental renders')
@@ -447,6 +447,34 @@ call s:BothWaysAgree('an edit inside a code fence')
 " A change at the very top, so the patch starts at row 1.
 call setline(1, '# Retitled')
 call s:BothWaysAgree('an edit at the first row')
+
+" Inserting a line above everything: nothing below it changes on screen, but
+" every row below now comes from a different source line.  While the source line
+" was part of a row's identity this had no common suffix at all and shipped the
+" whole document, which made the incremental path inert for Enter, `o`, `dd` and
+" every paste.  The map is patched separately now, so this must stay a patch —
+" and the map must still be right afterwards, which is what scroll sync and the
+" preview's `x` ride on.
+let s:top_insert_patches = simplemarkdown#DebugStatus().patched_renders
+call append(0, ['A line inserted above everything.', ''])
+call simplemarkdown#Refresh()
+call s:Wait('!simplemarkdown#DebugStatus().in_flight', 5000)
+sleep 50m
+call assert_true(simplemarkdown#DebugStatus().patched_renders > s:top_insert_patches,
+      \ 'an insertion at the top is applied as a patch, not as a whole document')
+
+let s:fence_src = search('fn main', 'nw')
+call assert_true(s:fence_src > 0, 'the fixture still has its fenced block')
+call cursor(s:fence_src, 1)
+doautocmd CursorMoved
+let s:mapped = line('.', s:PreviewWin())
+call assert_true(getbufline(winbufnr(s:PreviewWin()), s:mapped)[0] =~# 'fn main',
+      \ 'the source map survives an insertion patch, got: '
+      \ .. string(getbufline(winbufnr(s:PreviewWin()), s:mapped)))
+
+call s:BothWaysAgree('an insertion at the very top')
+call deletebufline('%', 1, 2)
+call s:BothWaysAgree('removing the line inserted at the top')
 
 call assert_true(simplemarkdown#DebugStatus().patched_renders > s:before_patches,
       \ 'renders were actually applied as patches, not silently as full ones')

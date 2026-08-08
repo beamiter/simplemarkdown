@@ -19,13 +19,20 @@ vim9script
 # daemon remembers the rows it last sent for a session and answers with the
 # splice that turns them into the new ones, so a keystroke that reflows one
 # paragraph replaces two rows and repaints two rows' worth of properties rather
-# than four thousand.  The session keeps its own copy of the row → source map
-# and splices it the same way; `total` is the checksum that catches the two
-# copies drifting apart, and a mismatch asks for a whole document back rather
-# than redrawing something that is already wrong.
+# than four thousand.
+#
+# Protocol v3 separated the row → source map from the rows.  A row's source line
+# is not part of what the row looks like, and treating it as part of the row's
+# identity meant that inserting one line — which moves every row below it in the
+# map and nothing on screen — had no common suffix and shipped the whole
+# document.  The map now arrives as its own tiny correction (`patch.s`, usually
+# one delta) applied after the row splice.  Two independently spliced arrays can
+# drift where one could not, so there are two checksums: `total` for the rows and
+# `src_sum` for the map, and a mismatch in either asks for a whole document back
+# rather than redrawing something that is already wrong.
 # =============================================================================
 
-const PROTOCOL_VERSION = 2
+const PROTOCOL_VERSION = 3
 const RENDER_TIMEOUT_MS = 10000
 # Rendering the whole buffer on every keystroke burst is cheap in Rust but not
 # free in JSON; past this the preview only refreshes on write and on demand.
@@ -165,14 +172,34 @@ def EnsureBackend(): bool
 enddef
 
 
+def ProtocolMessage(protocol: number): string
+  return printf(
+    'Daemon speaks protocol v%d, this plugin speaks v%d. Run ./install.sh, then :SimpleMarkdownRestart.',
+    protocol, PROTOCOL_VERSION)
+enddef
+
+
+# The daemon answered the handshake with a protocol this plugin cannot read.
+# Not a transient state: it lasts until the binary is rebuilt.
+def ProtocolMismatch(): number
+  var negotiated = simplemarkdown#core#Protocol()
+  return simplemarkdown#core#Ready() && negotiated != PROTOCOL_VERSION ? negotiated : 0
+enddef
+
+
 def OnDaemonReady(protocol: number, caps: dict<any>)
   if protocol != PROTOCOL_VERSION
     # A protocol we do not know is worse than no preview: the row and property
-    # layout is exactly what changes when it is bumped.
+    # layout is exactly what changes when it is bumped.  This is what a plugin
+    # update without a rebuild looks like — the commonest failure in a plugin
+    # with a compiled backend — so the explanation goes in the window the user
+    # is looking at, not only in a message that the next redraw scrolls away.
     echohl WarningMsg
-    echom printf('[SimpleMarkdown] daemon speaks protocol v%d, this plugin speaks v%d. Reinstall with ./install.sh.',
-      protocol, PROTOCOL_VERSION)
+    echom '[SimpleMarkdown] ' .. ProtocolMessage(protocol)
     echohl None
+    for key in keys(sessions)
+      Placeholder(key, ProtocolMessage(protocol))
+    endfor
     return
   endif
   Log(printf('daemon ready, %d capabilities', len(caps)))
@@ -633,6 +660,15 @@ def Render(key: string)
   if !EnsureBackend()
     return
   endif
+  # Asking a daemon whose protocol we cannot read for rows would paint a
+  # document laid out to a format we do not know how to place properties in.
+  # The handshake already said so; a manual :SimpleMarkdownRefresh must not be
+  # a way around it.
+  var mismatch = ProtocolMismatch()
+  if mismatch != 0
+    Placeholder(key, ProtocolMessage(mismatch))
+    return
+  endif
 
   var width = winwidth(session.winid)
   if width <= 0
@@ -777,6 +813,18 @@ def Apply(key: string, reply: dict<any>): bool
     return false
   endif
 
+  # The rows and the row → source map are spliced independently since v3, so the
+  # rows agreeing no longer implies the map does.  A drifted map is not a wrong
+  # pixel — it is `x` toggling the wrong task and <CR> landing on the wrong
+  # line — so it gets a checksum of its own.
+  var src_sum = get(reply, 'src_sum', -1)
+  if src_sum >= 0 && src_sum != reduce(session.src_map, (running, src) => running + src, 0)
+    Log(printf('render %s: the source map does not match the daemon''s; resynchronising', key))
+    session.rendered = false
+    Schedule(key, 0)
+    return false
+  endif
+
   session.rendered = true
   session.toc = get(reply, 'toc', [])
   session.links = get(reply, 'links', [])
@@ -831,9 +879,11 @@ def ApplyPatch(session: dict<any>, patch: dict<any>): bool
     return false
   endif
   if del == 0 && empty(rows)
-    # Nothing moved.  The daemon sends this when a keystroke did not change the
-    # rendering at all — a space inside a fence, a character in a comment.
-    return true
+    # Nothing moved on screen.  The daemon sends this when a keystroke did not
+    # change the rendering at all — a space inside a fence, a character in a
+    # comment.  The source map can still have moved underneath it: deleting one
+    # of two blank lines renders identically and shifts every row below.
+    return PatchSourceMap(session, patch)
   endif
   # A patch that reaches past what this session is holding cannot be applied to
   # it; say so rather than splicing at the wrong place.
@@ -889,6 +939,49 @@ def ApplyPatch(session: dict<any>, patch: dict<any>): bool
 
   session.lines = Splice(session.lines, from, del, text)
   session.src_map = Splice(session.src_map, from, del, src_map)
+  return PatchSourceMap(session, patch)
+enddef
+
+
+# The second half of a v3 patch: repair the rows whose source line moved but
+# whose appearance did not, which the row splice above cannot have covered
+# precisely because the daemon's diff compares appearance alone.
+#
+# `d` shifts every non-zero entry from row `f` on — one integer for a document
+# of any size, and the shape almost every insertion and deletion takes.  `s`
+# carries those entries in full for the rare case a single delta cannot
+# describe.  A correction that does not fit what this session holds fails
+# closed: the caller then resynchronises with a whole document.
+def PatchSourceMap(session: dict<any>, patch: dict<any>): bool
+  var fix = get(patch, 's', {})
+  if type(fix) != v:t_dict || empty(fix)
+    return true
+  endif
+  var from = get(fix, 'f', 0)
+  if from < 1 || from > len(session.src_map)
+    return false
+  endif
+  if has_key(fix, 's')
+    var tail = fix.s
+    if type(tail) != v:t_list || from - 1 + len(tail) != len(session.src_map)
+      return false
+    endif
+    session.src_map = (from > 1 ? session.src_map[0 : from - 2] : []) + tail
+    return true
+  endif
+  var delta = get(fix, 'd', 0)
+  if delta == 0
+    return true
+  endif
+  var index = from - 1
+  while index < len(session.src_map)
+    # A row that came from no particular source line — a box border, a blank
+    # spacer — stays at 0; it did not move, it never had a place.
+    if session.src_map[index] > 0
+      session.src_map[index] += delta
+    endif
+    index += 1
+  endwhile
   return true
 enddef
 

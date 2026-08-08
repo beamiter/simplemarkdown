@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-external clean vim-core defcompile check-classes check-protocol preview bench core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-protocol test-external clean vim-core defcompile check-classes check-protocol preview bench core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon check-protocol check-classes defcompile vim-core test-vim test-links test-external
+check: core-verify fmt clippy test test-daemon check-protocol check-classes defcompile vim-core test-vim test-links test-protocol test-external
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -87,6 +87,12 @@ test-vim: build
 # file because it needs a docs tree on disk, not the smoke test's one buffer.
 test-links: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_links.vim
+
+# Version skew: a plugin updated without its daemon rebuilt.  `check-protocol`
+# above proves the three declarations agree; this proves what happens when they
+# do not — the preview must explain itself and must not render.
+test-protocol:
+	vim -Nu NONE -n -i NONE -es -S tests/vim_protocol.vim
 
 # The external (browser) preview, against a stand-in for omd: port allocation,
 # one server per buffer, and teardown.  Needs no omd installed.

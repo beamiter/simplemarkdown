@@ -13,7 +13,7 @@ mod protocol;
 mod render;
 mod table;
 
-use protocol::{Event, Line, PROTOCOL_VERSION, Patch, RenderResult, Request};
+use protocol::{Event, Line, PROTOCOL_VERSION, Patch, RenderResult, Request, SrcPatch};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -85,11 +85,103 @@ fn diff(prev: &[Line], next: &[Line]) -> Patch {
     {
         tail += 1;
     }
-    Patch {
+    let mut patch = Patch {
         from: head + 1,
         del: prev.len() - head - tail,
         lines: next[head..next.len() - tail].to_vec(),
+        src: None,
+    };
+    // The rows the trim left alone look the same but need not have come from
+    // the same source lines — that is the whole reason `Line` no longer
+    // compares `src` — so the map is repaired as a second, independent step,
+    // computed against exactly what the client will be holding once it has
+    // spliced the rows in.
+    patch.src = src_correction(&spliced_src(prev, &patch), next);
+    patch
+}
+
+/// The row → source map the client ends up with after applying `patch`'s rows.
+fn spliced_src(prev: &[Line], patch: &Patch) -> Vec<u32> {
+    let mut map: Vec<u32> = prev.iter().map(|line| line.src).collect();
+    map.splice(
+        patch.from - 1..patch.from - 1 + patch.del,
+        patch.lines.iter().map(|line| line.src),
+    );
+    map
+}
+
+/// What still has to happen to `applied` for it to be the new document's map.
+///
+/// Almost always one integer: `n` lines inserted anywhere above moves every
+/// row below by `n`, and both a shifted prefix (a row whose *appearance* did
+/// not change, so the diff kept it) and a shifted suffix are covered by the
+/// same rule.  Sending the entries in full is the honest answer when a single
+/// delta cannot describe them, and even then it is only the rows from the
+/// first disagreement on.
+fn src_correction(applied: &[u32], next: &[Line]) -> Option<SrcPatch> {
+    debug_assert_eq!(applied.len(), next.len());
+    let start = applied
+        .iter()
+        .zip(next)
+        .position(|(have, want)| *have != want.src)?;
+
+    let mut delta: Option<i64> = None;
+    let mut shiftable = true;
+    for (have, want) in applied[start..].iter().zip(&next[start..]) {
+        // A row that came from no particular source line — a box border, a
+        // blank spacer — is 0 on both sides and the client leaves it alone.  A
+        // row that gained or lost one is not something a shift can express.
+        if *have == 0 || want.src == 0 {
+            if *have == want.src {
+                continue;
+            }
+            shiftable = false;
+            break;
+        }
+        let moved = i64::from(want.src) - i64::from(*have);
+        match delta {
+            None => delta = Some(moved),
+            Some(seen) if seen == moved => {}
+            Some(_) => {
+                shiftable = false;
+                break;
+            }
+        }
     }
+
+    if shiftable && let Some(moved) = delta {
+        return Some(SrcPatch {
+            from: start + 1,
+            delta: moved,
+            tail: None,
+        });
+    }
+    Some(SrcPatch {
+        from: start + 1,
+        delta: 0,
+        tail: Some(next[start..].iter().map(|line| line.src).collect()),
+    })
+}
+
+/// Roughly what a set of rows costs on the wire, for deciding whether a patch
+/// is worth the splice.  Counting rows instead — what this used to do — says a
+/// patch of ten table rows is smaller than a document of a thousand blank ones,
+/// which is backwards.
+fn wire_size(lines: &[Line]) -> usize {
+    lines
+        .iter()
+        .map(|line| line.text.len() + line.props.len() * 24 + 16)
+        .sum()
+}
+
+fn patch_size(patch: &Patch) -> usize {
+    wire_size(&patch.lines)
+        + match &patch.src {
+            Some(SrcPatch {
+                tail: Some(tail), ..
+            }) => tail.len() * 5,
+            _ => 0,
+        }
 }
 
 fn main() -> std::process::ExitCode {
@@ -251,6 +343,7 @@ async fn serve() -> std::io::Result<()> {
                     }
 
                     let total = output.lines.len();
+                    let src_sum: u64 = output.lines.iter().map(|line| u64::from(line.src)).sum();
                     let (lines, patch) = match key.is_empty() {
                         true => (Some(output.lines), None),
                         false => {
@@ -267,11 +360,12 @@ async fn serve() -> std::io::Result<()> {
                             // it is substantially smaller.  A rewrite of most of
                             // the document is cheaper for the client to take as
                             // a plain buffer replace.
+                            let full_size = wire_size(&output.lines);
                             let patch = incremental
                                 .then(|| sessions.get(&key))
                                 .flatten()
                                 .map(|session| diff(&session.rows, &output.lines))
-                                .filter(|patch| patch.lines.len() * 2 <= total);
+                                .filter(|patch| patch_size(patch) * 2 <= full_size);
                             if sessions.len() >= MAX_SESSIONS
                                 && !sessions.contains_key(&key)
                                 && let Some(evict) = sessions.keys().next().cloned()
@@ -298,6 +392,7 @@ async fn serve() -> std::io::Result<()> {
                             id,
                             width,
                             total,
+                            src_sum,
                             lines,
                             patch,
                             toc: output.toc,
@@ -517,10 +612,12 @@ mod tests {
     fn events_serialise_with_the_short_field_names() {
         let output = render::render("# hi\n", 20, &protocol::Options::default());
         let total = output.lines.len();
+        let src_sum = output.lines.iter().map(|line| u64::from(line.src)).sum();
         let event = Event::RenderResult(Box::new(RenderResult {
             id: 1,
             width: 20,
             total,
+            src_sum,
             lines: Some(output.lines),
             patch: None,
             toc: output.toc,
@@ -535,6 +632,165 @@ mod tests {
         // A full reply carries no patch key at all, so the client can branch
         // on its presence rather than on a null.
         assert!(!encoded.contains(r#""patch""#), "{encoded}");
+    }
+
+    /// The client's side of a patch, in the same two steps Vim takes: splice
+    /// the rows, then repair the source map below the splice.  Nothing else in
+    /// the daemon can prove those two agree, because `Line`'s equality no
+    /// longer looks at `src`.
+    fn apply(prev: &[Line], patch: &Patch) -> Vec<Line> {
+        let mut rows = prev.to_vec();
+        rows.splice(
+            patch.from - 1..patch.from - 1 + patch.del,
+            patch.lines.iter().cloned(),
+        );
+        match &patch.src {
+            None => {}
+            Some(SrcPatch {
+                from,
+                tail: Some(entries),
+                ..
+            }) => {
+                assert_eq!(from - 1 + entries.len(), rows.len(), "the tail must fit");
+                for (row, src) in rows[from - 1..].iter_mut().zip(entries) {
+                    row.src = *src;
+                }
+            }
+            Some(SrcPatch { from, delta, .. }) => {
+                for row in &mut rows[from - 1..] {
+                    if row.src != 0 {
+                        row.src = (i64::from(row.src) + delta) as u32;
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    fn srcs(lines: &[Line]) -> Vec<u32> {
+        lines.iter().map(|line| line.src).collect()
+    }
+
+    #[test]
+    fn an_insertion_at_the_top_is_still_a_small_patch() {
+        // The regression this whole protocol version exists for: `src` used to
+        // be part of a row's identity, so inserting one line above made every
+        // row below compare unequal, the common suffix vanished, and a single
+        // keystroke shipped the entire document.
+        let body: String = (0..200).map(|n| format!("paragraph {n}\n\n")).collect();
+        let before = render::render(&body, 60, &protocol::Options::default());
+        let after = render::render(
+            &format!("a new opening line\n\n{body}"),
+            60,
+            &protocol::Options::default(),
+        );
+
+        let patch = diff(&before.lines, &after.lines);
+        assert!(
+            patch.lines.len() <= 4,
+            "{} rows for a one-line insertion",
+            patch.lines.len()
+        );
+        assert!(
+            patch_size(&patch) * 2 <= wire_size(&after.lines),
+            "the patch must survive the filter that chooses patch over document"
+        );
+        // Two source lines were added, so every row below moves by two — one
+        // integer for a document of any length.
+        match &patch.src {
+            Some(SrcPatch {
+                delta: 2,
+                tail: None,
+                ..
+            }) => {}
+            other => panic!("expected a shift of 2, got {other:?}"),
+        }
+        let applied = apply(&before.lines, &patch);
+        assert_eq!(applied, after.lines, "the rows");
+        assert_eq!(srcs(&applied), srcs(&after.lines), "the source map");
+    }
+
+    #[test]
+    fn a_deletion_that_changes_no_row_still_moves_the_source_map() {
+        // Deleting one of two consecutive blank lines renders identically and
+        // shifts every row below it, which is exactly the case a diff over
+        // appearance alone cannot see.
+        let before = render::render("a\n\n\nb\n", 40, &protocol::Options::default());
+        let after = render::render("a\n\nb\n", 40, &protocol::Options::default());
+        assert_eq!(before.lines, after.lines, "no row changed");
+        assert_ne!(srcs(&before.lines), srcs(&after.lines), "but the map did");
+
+        let patch = diff(&before.lines, &after.lines);
+        assert!(patch.lines.is_empty() && patch.del == 0);
+        let applied = apply(&before.lines, &patch);
+        assert_eq!(srcs(&applied), srcs(&after.lines));
+    }
+
+    #[test]
+    fn random_edit_scripts_round_trip_through_a_patch() {
+        // The four hand-written cases below each prove one shape.  This proves
+        // the property they are examples of — apply(prev, diff(prev, next)) is
+        // next, in appearance *and* in source map — over a few hundred edits
+        // made at random offsets in a document of mixed block types.  The
+        // generator is a fixed-seed xorshift so a failure is reproducible.
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next_rand = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let palette = [
+            "# a heading",
+            "## another heading",
+            "",
+            "some prose that is long enough to wrap at forty columns or so",
+            "- a list item",
+            "  - a nested item",
+            "> quoted",
+            "```rust",
+            "fn main() {}",
+            "```",
+            "| a | b |",
+            "|---|---|",
+            "| 1 | 2 |",
+        ];
+
+        let mut source: Vec<String> = (0..40)
+            .map(|n| palette[n % palette.len()].to_string())
+            .collect();
+        let opts = protocol::Options::default();
+        let mut prev = render::render(&source.join("\n"), 40, &opts);
+
+        for _ in 0..200 {
+            let roll = next_rand();
+            let at = (roll >> 8) as usize % (source.len() + 1);
+            match roll % 3 {
+                0 => source.insert(
+                    at,
+                    palette[(roll >> 32) as usize % palette.len()].to_string(),
+                ),
+                1 if !source.is_empty() => {
+                    source.remove(at.min(source.len() - 1));
+                }
+                _ if !source.is_empty() => {
+                    let index = at.min(source.len() - 1);
+                    source[index] = palette[(roll >> 32) as usize % palette.len()].to_string();
+                }
+                _ => {}
+            }
+
+            let next = render::render(&source.join("\n"), 40, &opts);
+            let patch = diff(&prev.lines, &next.lines);
+            let applied = apply(&prev.lines, &patch);
+            assert_eq!(applied, next.lines, "rows after {patch:?}");
+            assert_eq!(
+                srcs(&applied),
+                srcs(&next.lines),
+                "source map after {patch:?}"
+            );
+            prev = next;
+        }
     }
 
     #[test]

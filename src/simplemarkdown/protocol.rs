@@ -15,7 +15,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// v2 added the incremental reply: a render that only changed a paragraph
 /// answers with the rows that moved rather than the whole document.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// v3 took the source line out of a row's identity and patches the row →
+/// source map separately ([`SrcPatch`]), which is what made the incremental
+/// reply apply to insertions and deletions rather than only to edits in place.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 // ─────────────────────────── requests ───────────────────────────
 
@@ -178,6 +182,11 @@ pub struct RenderResult {
     /// instead of `lines` when that is the smaller answer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub patch: Option<Patch>,
+    /// Sum of every row's source line.  A second checksum beside `total`,
+    /// because the rows and the source map are now spliced independently and a
+    /// map that has drifted while the text has not would otherwise be invisible
+    /// until it moved the cursor — or an `x` — to the wrong line.
+    pub src_sum: u64,
     pub toc: Vec<TocEntry>,
     pub links: Vec<LinkRef>,
     /// Top-level blocks, for painting the one the source cursor is in.
@@ -199,6 +208,43 @@ pub struct Patch {
     pub del: usize,
     #[serde(rename = "l")]
     pub lines: Vec<Line>,
+    /// What the rows *below* the splice need doing to their source lines.
+    /// Absent when they need nothing, which is every edit that neither adds nor
+    /// removes a source line.
+    #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
+    pub src: Option<SrcPatch>,
+}
+
+/// The correction the client's row → source map needs below a [`Patch`].
+///
+/// Inserting one line in the source moves every row below it in the map while
+/// changing nothing about how those rows look.  That is why [`Line`] compares
+/// only its appearance — including `src` made the common suffix vanish, and
+/// with it the whole point of patching — and it is why the map is repaired
+/// here, as a second and much cheaper splice.
+///
+/// It is computed against exactly what the client holds once it has spliced
+/// the rows in, so the usual case — everything from some row on moved by the
+/// same amount — is one integer for a document of any size.
+#[derive(Debug, Serialize)]
+pub struct SrcPatch {
+    /// 1-based row of the first entry that needs correcting.  Not necessarily
+    /// below the row splice: a row whose appearance did not change is kept by
+    /// the diff, and its source line may still have moved.
+    #[serde(rename = "f")]
+    pub from: usize,
+    /// Add this to every non-zero entry from `from` to the end.  Rows that came
+    /// from no particular source line stay at 0.
+    #[serde(rename = "d", skip_serializing_if = "is_zero_i64")]
+    pub delta: i64,
+    /// Those entries in full instead, for the rare tail that a single delta
+    /// cannot describe — a reflow that moved rows between blocks, say.
+    #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
+    pub tail: Option<Vec<u32>>,
+}
+
+fn is_zero_i64(value: &i64) -> bool {
+    *value == 0
 }
 
 /// `[row, rows, src_first, src_last]` — a top-level block's rendered extent
@@ -208,7 +254,7 @@ pub struct Patch {
 pub struct BlockSpan(pub u32, pub u32, pub u32, pub u32);
 
 /// One rendered row.
-#[derive(Debug, Serialize, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct Line {
     /// Display text.  Never contains a newline or a tab.
     #[serde(rename = "t")]
@@ -226,6 +272,23 @@ pub struct Line {
 fn is_zero(value: &u32) -> bool {
     *value == 0
 }
+
+/// Two rows are the same row when they *look* the same.
+///
+/// `src` is deliberately not part of this.  It is bookkeeping about where a row
+/// came from, not about the row, and it shifts on every row below an inserted
+/// line while nothing on screen moves at all.  Comparing it made the diff's
+/// common suffix vanish for `Enter`, `dd`, `o` and every paste — half of all
+/// editing — so the incremental reply, the feature this daemon was built
+/// around, silently degraded to a full document for exactly those edits.  The
+/// map is patched separately; see [`SrcPatch`].
+impl PartialEq for Line {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text && self.props == other.props
+    }
+}
+
+impl Eq for Line {}
 
 /// Serialises as a three-element array; see the module comment.
 #[derive(Debug, Serialize, PartialEq, Eq, Clone)]

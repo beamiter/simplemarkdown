@@ -52,6 +52,7 @@ g:simplemarkdown_table_zebra	simplemarkdown.txt	/*g:simplemarkdown_table_zebra*
 g:simplemarkdown_task_progress	simplemarkdown.txt	/*g:simplemarkdown_task_progress*
 g:simplemarkdown_width	simplemarkdown.txt	/*g:simplemarkdown_width*
 g:simplemarkdown_wrap	simplemarkdown.txt	/*g:simplemarkdown_wrap*
+look	simplemarkdown.txt	/*look*
 simplemarkdown-architecture	simplemarkdown.txt	/*simplemarkdown-architecture*
 simplemarkdown-commands	simplemarkdown.txt	/*simplemarkdown-commands*
 simplemarkdown-configuration	simplemarkdown.txt	/*simplemarkdown-configuration*

@@ -197,6 +197,7 @@ make preview        # render the fixture to the terminal; WIDTH=100 to change
 make check-protocol # Rust, Vim and the handshake agree on the protocol version
 make check-classes  # prove the Rust and Vim text-property class lists agree
 make test-links     # link following, from the preview and from the source
+make test-protocol  # what a plugin updated without its daemon rebuilt does
 make test-external  # the browser preview, against a stand-in for omd
 ```
 

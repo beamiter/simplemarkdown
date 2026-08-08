@@ -37,6 +37,29 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **An inserted line is a patch, not a whole document** (protocol v3). A row's
+  source line used to be part of its identity, so pressing Enter — which moves
+  every row below it in the row → source map and moves nothing on screen — left
+  the diff no common suffix and sent the entire document. Measured on a
+  1,800-row preview: inserting one line above everything was a 125,303-byte
+  reply and is now an 84-byte patch. `Enter`, `o`, `dd` and every paste, which
+  is about half of all editing, went the expensive way; only edits in place
+  were ever incremental. Rows now compare on appearance alone and the map
+  arrives as its own correction, usually a single delta whatever the size of
+  the document. Two checksums instead of one (`total` for the rows, `src_sum`
+  for the map), because two arrays spliced independently can drift where one
+  could not; either mismatching resynchronises with a full render. The
+  patch-versus-document heuristic compares wire bytes rather than row counts,
+  which had called a patch of ten table rows bigger than a thousand blank ones.
+  Requires a rebuilt daemon: `./install.sh`, then `:SimpleMarkdownRestart`.
+
+- **The version-skew message is where you can see it.** A plugin updated
+  without its backend rebuilt now explains itself in the preview window instead
+  of leaving a blank one behind an `echom` that the next redraw eats, and a
+  manual `:SimpleMarkdownRefresh` can no longer talk past the check and paint
+  rows laid out to a protocol this plugin cannot read. `tests/vim_protocol.vim`
+  / `make test-protocol` covers the branch, which had none.
+
 - **Link following that works on all three href shapes.** A bare `#anchor` and
   the `#section` half of `other.md#section` were both documented and neither
   had ever worked: the first was parsed as a file named `#anchor`, the second
