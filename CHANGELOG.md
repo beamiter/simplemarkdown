@@ -53,6 +53,15 @@ All notable changes to this project are documented here.  The format follows
   which had called a patch of ten table rows bigger than a thousand blank ones.
   Requires a rebuilt daemon: `./install.sh`, then `:SimpleMarkdownRestart`.
 
+- **The outline, link table and block index are sent only when they change.**
+  All three describe the whole document however little of it moved, so they
+  travelled in full on every keystroke: on an 1,800-row document a one-word edit
+  was an 84-byte patch inside a 9,976-byte reply, and Vim parsed that JSON on
+  the main thread each time. The daemon fingerprints each per session and leaves
+  out the ones the client already has; the same reply is now 195 bytes. Absent
+  means "keep what you have", exactly as an absent `lines` already meant "the
+  patch is the whole answer".
+
 - **The version-skew message is where you can see it.** A plugin updated
   without its backend rebuilt now explains itself in the preview window instead
   of leaving a blank one behind an `echom` that the next redraw eats, and a

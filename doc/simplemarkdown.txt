@@ -606,6 +606,13 @@ is repaired instead by its own correction, which for an insertion or a deletion
 is a single number ("everything from row N on moved by two") whatever the size
 of the document.
 
+The outline, the link table and the block index are sent only when they
+change.  Each describes the whole document however little of it moved, so on a
+one-word edit they were the reply and the patch was a rounding error beside
+them — and Vim parses that JSON on the main thread on every keystroke.  Absent
+means "keep what you have"; a preview that has thrown its copies away asks for
+a full render, which always carries all three.
+
 The reply carries two checksums, the row count and the sum of the source map,
 because the rows and the map are spliced independently and a map that has
 drifted while the text has not would otherwise stay invisible until it moved

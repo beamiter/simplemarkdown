@@ -498,6 +498,45 @@ call assert_true(simplemarkdown#DebugStatus().full_renders > s:discard_full,
 call win_execute(s:discard_preview, 'vertical resize ' .. s:discard_width)
 call s:BothWaysAgree('a render discarded for a stale width')
 
+" ------------------------------------------------ the outline across patches ---
+
+" The outline, the link table and the block index are re-sent only when they
+" change — on a one-word edit they were the whole reply — so a session keeping
+" its own copies has to be keeping the right ones.  `]]` walks the outline, so
+" walking it to the end says what the session believes the last heading is.
+
+function! s:LastHeadingRow() abort
+  call win_gotoid(s:PreviewWin())
+  call cursor(1, 1)
+  let l:row = 0
+  while line('.') != l:row
+    let l:row = line('.')
+    call simplemarkdown#NextHeading(1)
+  endwhile
+  return l:row
+endfunction
+
+call win_gotoid(s:src_win)
+call append(line('$'), ['', '#### Outline freshness'])
+call simplemarkdown#Refresh()
+call s:Wait('!simplemarkdown#DebugStatus().in_flight', 5000)
+sleep 50m
+let s:outline_row = s:LastHeadingRow()
+call assert_true(getbufline(winbufnr(s:PreviewWin()), s:outline_row)[0] =~# 'Outline freshness',
+      \ 'a heading added by an incremental render is in the outline, got: '
+      \ .. string(getbufline(winbufnr(s:PreviewWin()), s:outline_row)))
+
+call win_gotoid(s:src_win)
+call deletebufline('%', line('$') - 1, line('$'))
+call simplemarkdown#Refresh()
+call s:Wait('!simplemarkdown#DebugStatus().in_flight', 5000)
+sleep 50m
+let s:outline_row = s:LastHeadingRow()
+call assert_true(getbufline(winbufnr(s:PreviewWin()), s:outline_row)[0] !~# 'Outline freshness',
+      \ 'and a heading removed by one is out of it again, got: '
+      \ .. string(getbufline(winbufnr(s:PreviewWin()), s:outline_row)))
+call win_gotoid(s:src_win)
+
 " ------------------------------------------------------- the current block ---
 
 " The source cursor inside the fenced block must wash that whole block in the

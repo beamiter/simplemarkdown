@@ -187,10 +187,20 @@ pub struct RenderResult {
     /// map that has drifted while the text has not would otherwise be invisible
     /// until it moved the cursor — or an `x` — to the wrong line.
     pub src_sum: u64,
-    pub toc: Vec<TocEntry>,
-    pub links: Vec<LinkRef>,
+    /// The outline, the link spans and the top-level block index.  Each is
+    /// absent when it is byte-for-byte what this session was last sent, which on
+    /// a small patch is the difference between a reply of a hundred bytes and
+    /// one of thirty thousand: they describe the whole document however little
+    /// of it moved, and Vim parses the JSON on the main thread.  Absent means
+    /// "keep what you have", exactly as an absent `lines` already means "the
+    /// patch is the whole answer".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toc: Option<Vec<TocEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub links: Option<Vec<LinkRef>>,
     /// Top-level blocks, for painting the one the source cursor is in.
-    pub blocks: Vec<BlockSpan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<BlockSpan>>,
     pub elapsed_ms: u128,
 }
 
@@ -250,7 +260,7 @@ fn is_zero_i64(value: &i64) -> bool {
 /// `[row, rows, src_first, src_last]` — a top-level block's rendered extent
 /// and the source lines it came from.  Serialises as an array for the same
 /// reason [`Prop`] does.
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq, Hash)]
 pub struct BlockSpan(pub u32, pub u32, pub u32, pub u32);
 
 /// One rendered row.
@@ -294,7 +304,7 @@ impl Eq for Line {}
 #[derive(Debug, Serialize, PartialEq, Eq, Clone)]
 pub struct Prop(pub usize, pub usize, pub &'static str);
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Hash)]
 pub struct TocEntry {
     pub level: u8,
     pub text: String,
@@ -310,7 +320,7 @@ pub struct TocEntry {
     pub row: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Hash)]
 pub struct LinkRef {
     /// 1-based rendered row.
     pub row: u32,

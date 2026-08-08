@@ -57,6 +57,57 @@ struct Session {
     /// one already sent would describe a document the client has moved past.
     id: u64,
     rows: Vec<Line>,
+    /// Fingerprints of the three whole-document indexes this session was last
+    /// sent, so an unchanged one can be left out of the next reply.
+    indexes: Indexes,
+}
+
+/// The outline, the link spans and the block index, by fingerprint.
+///
+/// All three describe the whole document however little of it moved, and on a
+/// small patch they are the reply: measured on an 1,800-row document, an
+/// 84-byte patch travelled inside a 32,864-byte answer, and Vim parses that
+/// JSON on the main thread on every keystroke.
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
+struct Indexes {
+    toc: u64,
+    links: u64,
+    blocks: u64,
+}
+
+impl Indexes {
+    fn of(output: &render::Output) -> Self {
+        Self {
+            toc: fingerprint(&output.toc),
+            links: fingerprint(&output.links),
+            blocks: fingerprint(&output.blocks),
+        }
+    }
+}
+
+/// Which indexes a particular reply has to carry.
+#[derive(Clone, Copy)]
+struct Carry {
+    toc: bool,
+    links: bool,
+    blocks: bool,
+}
+
+impl Carry {
+    fn everything() -> Self {
+        Self {
+            toc: true,
+            links: true,
+            blocks: true,
+        }
+    }
+}
+
+fn fingerprint<T: std::hash::Hash>(value: &T) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// A client that opens and closes previews all day should not grow the daemon
@@ -344,6 +395,15 @@ async fn serve() -> std::io::Result<()> {
 
                     let total = output.lines.len();
                     let src_sum: u64 = output.lines.iter().map(|line| u64::from(line.src)).sum();
+                    let indexes = Indexes::of(&output);
+                    // Which of the three indexes this reply has to carry.  A
+                    // client that says `incremental` is holding what it was
+                    // last sent; one that does not has thrown it away — a
+                    // placeholder, a fresh window — and needs all three back.
+                    // A session-less render always carries them: there is
+                    // nothing remembering what that client has.
+                    let mut carry = Carry::everything();
+                    let mut output = output;
                     let (lines, patch) = match key.is_empty() {
                         true => (Some(output.lines), None),
                         false => {
@@ -366,6 +426,15 @@ async fn serve() -> std::io::Result<()> {
                                 .flatten()
                                 .map(|session| diff(&session.rows, &output.lines))
                                 .filter(|patch| patch_size(patch) * 2 <= full_size);
+                            let sent = incremental
+                                .then(|| sessions.get(&key))
+                                .flatten()
+                                .map_or(Indexes::default(), |session| session.indexes);
+                            carry = Carry {
+                                toc: sent.toc != indexes.toc,
+                                links: sent.links != indexes.links,
+                                blocks: sent.blocks != indexes.blocks,
+                            };
                             if sessions.len() >= MAX_SESSIONS
                                 && !sessions.contains_key(&key)
                                 && let Some(evict) = sessions.keys().next().cloned()
@@ -377,6 +446,7 @@ async fn serve() -> std::io::Result<()> {
                                 Session {
                                     id,
                                     rows: output.lines.clone(),
+                                    indexes,
                                 },
                             );
                             match patch {
@@ -395,9 +465,9 @@ async fn serve() -> std::io::Result<()> {
                             src_sum,
                             lines,
                             patch,
-                            toc: output.toc,
-                            links: output.links,
-                            blocks: output.blocks,
+                            toc: carry.toc.then(|| std::mem::take(&mut output.toc)),
+                            links: carry.links.then(|| std::mem::take(&mut output.links)),
+                            blocks: carry.blocks.then(|| std::mem::take(&mut output.blocks)),
                             elapsed_ms: started.elapsed().as_millis(),
                         })),
                     )
@@ -620,9 +690,9 @@ mod tests {
             src_sum,
             lines: Some(output.lines),
             patch: None,
-            toc: output.toc,
-            links: output.links,
-            blocks: output.blocks,
+            toc: Some(output.toc),
+            links: Some(output.links),
+            blocks: Some(output.blocks),
             elapsed_ms: 0,
         }));
         let encoded = serde_json::to_string(&event).expect("encodes");

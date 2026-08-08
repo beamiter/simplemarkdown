@@ -45,6 +45,32 @@ test-daemon: build
 			|| { echo "run $$run: $$got replies, want 3 (a reply was lost at exit)"; exit 1; }; \
 	done
 	@echo "daemon: replies survive stdin EOF"
+	@# The outline, the link table and the block index describe the whole
+	@# document however little of it moved, and on a small patch they are the
+	@# entire reply.  A fresh session must be sent all three; a render that
+	@# changes none of them must carry none.
+	@out="$$(printf '%s\n' \
+		'{"type":"render","id":1,"session":"s","lines":["# heading","","word one"],"width":40}' \
+		| ./target/release/simplemarkdown-daemon)"; \
+	case "$$out" in \
+		*'"toc"'*'"links"'*'"blocks"'*) ;; \
+		*) echo "a fresh session must be sent every index: $$out"; exit 1;; \
+	esac
+	@# Serialised with a sleep: piped in together the two renders run
+	@# concurrently, and the second would find no session to compare against.
+	@out="$$({ printf '%s\n' \
+		'{"type":"render","id":1,"session":"s","lines":["# heading","","word one"],"width":40}'; \
+		sleep 1; \
+		printf '%s\n' \
+		'{"type":"render","id":2,"session":"s","incremental":true,"lines":["# heading","","word two"],"width":40}'; \
+		sleep 1; } \
+		| ./target/release/simplemarkdown-daemon | tail -1)"; \
+	case "$$out" in \
+		*'"toc"'*) echo "an unchanged outline was re-sent: $$out"; exit 1;; \
+		*'"links"'*) echo "an unchanged link table was re-sent: $$out"; exit 1;; \
+		*'"blocks"'*) echo "an unchanged block index was re-sent: $$out"; exit 1;; \
+	esac; \
+	echo "daemon: an unchanged index is not re-sent"
 
 # The protocol version is stated three times: in Rust, in Vim, and by the
 # running daemon's handshake.  The plugin refuses to talk to a daemon whose

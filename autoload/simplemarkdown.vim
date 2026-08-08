@@ -860,9 +860,14 @@ def Apply(key: string, reply: dict<any>): bool
   endif
 
   session.rendered = true
-  session.toc = get(reply, 'toc', [])
-  session.links = get(reply, 'links', [])
-  session.blocks = get(reply, 'blocks', [])
+  # Absent means unchanged, not empty.  All three describe the whole document
+  # however little of it moved — on a one-word edit they were the reply, the
+  # patch being a rounding error beside them — so the daemon leaves out the ones
+  # this session already has.  A session that threw its copies away asks with
+  # `incremental` false, which is exactly what tells the daemon to send them.
+  session.toc = get(reply, 'toc', session.toc)
+  session.links = get(reply, 'links', session.links)
+  session.blocks = get(reply, 'blocks', session.blocks)
   session.row_for_src = BuildSourceIndex(session.src_map)
 
   # Re-anchor on the source cursor: after an edit the row a given source line
