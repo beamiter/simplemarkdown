@@ -85,6 +85,26 @@ call assert_true(s:PreviewText() =~# 'install\.sh',
 call assert_true(execute('messages') =~# 'protocol v',
       \ 'the mismatch is in :messages too')
 
+" The health report is where a user is told to look, so it has to name both
+" versions and the remedy rather than only what the plugin speaks.
+let s:health = execute('SimpleMarkdownHealth')
+call assert_true(s:health =~# '\[ERROR\] protocol',
+      \ 'health reports the protocol mismatch as an error, got: ' .. s:health)
+call assert_true(s:health =~# printf('v%d', s:expected)
+      \ && s:health =~# printf('v%d', s:expected - 1),
+      \ 'and names both versions')
+call assert_true(s:health =~# 'install\.sh', 'and the remedy')
+
+" And it says whether the binary in place is older than the sources beside it,
+" which is the same failure one step earlier.
+let s:built = getftime(g:simplemarkdown_daemon_path)
+let s:newest = 0
+for s:source in glob(s:root .. '/src/**/*.rs', 0, 1)
+  let s:newest = max([s:newest, getftime(s:source)])
+endfor
+call assert_true(s:health =~# (s:built >= s:newest ? '\[OK\] backend' : '\[WARN\] backend'),
+      \ 'health compares the backend against its sources, got: ' .. s:health)
+
 " Nothing may be rendered against a protocol this plugin cannot read: the row
 " and property layout is precisely what a version bump changes.
 SimpleMarkdownRefresh

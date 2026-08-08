@@ -148,6 +148,10 @@ second one.
 :SimpleMarkdownHealth   Report on the backend: where it was found, whether it
                         is running, the negotiated protocol version and
                         capabilities, restart counts and the last render time.
+                        Two of those lines are the ones worth reading after an
+                        update: whether the daemon's protocol and the plugin's
+                        agree, and whether the installed binary is older than
+                        the `src/` beside it.  Either says `./install.sh`.
 
                                                            *:SimpleMarkdownLog*
 :SimpleMarkdownLog      Open the backend log in a scratch buffer.  The log is a

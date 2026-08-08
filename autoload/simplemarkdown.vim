@@ -1662,12 +1662,46 @@ export def Restart()
 enddef
 
 
+# The binary in lib/ against the sources it was built from.  A plugin manager
+# updates the Vim files and the Rust files together and rebuilds neither, so
+# "the backend is older than its source" is the single most useful fact a
+# health report can carry — and the one it never had.
+def BackendStaleness(): string
+  var exe = simplemarkdown#core#Health().exe_path
+  if exe ==# '' || !filereadable(exe)
+    return ''
+  endif
+  var built = getftime(exe)
+  var newest = 0
+  for source in glob(fnamemodify(exe, ':p:h:h') .. '/src/**/*.rs', false, true)
+    var stamp = getftime(source)
+    if stamp > newest
+      newest = stamp
+    endif
+  endfor
+  if newest <= 0 || built <= 0
+    # No sources beside it: an installed copy rather than a working tree.
+    return ''
+  endif
+  return built >= newest
+    ? printf('[OK] backend: built %s, newer than its sources', strftime('%Y-%m-%d %H:%M', built))
+    : printf('[WARN] backend: built %s, older than src/ (%s). Run ./install.sh, then :SimpleMarkdownRestart.',
+        strftime('%Y-%m-%d %H:%M', built), strftime('%Y-%m-%d %H:%M', newest))
+enddef
+
+
 export def Health()
   SetupCore()
   var lines = simplemarkdown#core#HealthLines()
-  add(lines, printf('[%s] protocol: plugin speaks v%d',
-    simplemarkdown#core#Protocol() == PROTOCOL_VERSION || !simplemarkdown#core#Ready() ? 'OK' : 'ERROR',
-    PROTOCOL_VERSION))
+  var negotiated = simplemarkdown#core#Protocol()
+  add(lines, negotiated == PROTOCOL_VERSION || !simplemarkdown#core#Ready()
+    ? printf('[OK] protocol: plugin speaks v%d', PROTOCOL_VERSION)
+    : printf('[ERROR] protocol: plugin speaks v%d, the daemon speaks v%d. '
+        .. 'Run ./install.sh, then :SimpleMarkdownRestart.', PROTOCOL_VERSION, negotiated))
+  var staleness = BackendStaleness()
+  if staleness !=# ''
+    add(lines, staleness)
+  endif
   add(lines, printf('[INFO] preview sessions: %d', len(sessions)))
   if last_elapsed_ms >= 0
     add(lines, printf('[INFO] last render: %dms', last_elapsed_ms))

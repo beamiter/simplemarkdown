@@ -70,6 +70,13 @@ All notable changes to this project are documented here.  The format follows
   means "keep what you have", exactly as an absent `lines` already meant "the
   patch is the whole answer".
 
+- **`:SimpleMarkdownHealth` reports the two facts it was missing.** It said
+  which protocol the plugin speaks and stopped there, so a mismatch showed as
+  `[ERROR]` with no second number and no remedy; it now names both versions and
+  what to run. It also compares the installed binary against the `src/` beside
+  it and warns when the binary is older, which is what a plugin manager leaves
+  behind every time it updates the Vim files.
+
 - **The version-skew message is where you can see it.** A plugin updated
   without its backend rebuilt now explains itself in the preview window instead
   of leaving a blank one behind an `echom` that the next redraw eats, and a
