@@ -162,6 +162,54 @@ second one.
                         advertising the `format` capability: after updating the
                         plugin, run `./install.sh` and |:SimpleMarkdownRestart|.
 
+                                                       *:SimpleMarkdownPromote*
+                                                        *:SimpleMarkdownDemote*
+:[range]SimpleMarkdownPromote
+:[range]SimpleMarkdownDemote
+                        Move heading levels one step shallower or deeper: `##`
+                        becomes `#` or `###`.
+
+                        With no range — the usual case — the whole section the
+                        cursor is in moves: the heading at or above the cursor
+                        and every heading nested under it, so demoting a chapter
+                        takes its subsections with it and the document keeps the
+                        tree it had.  With a range of more than one line exactly
+                        the headings inside it move and nothing else.  (A
+                        one-line range is what a bare command gives, so it keeps
+                        the section meaning.)
+
+                        A setext heading stays one where it can: its underline
+                        changes between `=` and `-`.  There is no setext H3, so
+                        demoting an H2 past it rewrites the two lines as one
+                        `### heading`.  ATX headings keep their text, their
+                        indent and their trailing `##`.
+
+                        Refused whole, naming the heading, when any heading it
+                        would move would pass H1 or H6 — half a shift leaves a
+                        document restructured in a way nothing records.
+
+                        What is a heading is decided by the parser: a `#` at the
+                        start of a line in a fenced shell block is a comment, and
+                        a setext underline makes a heading of a line with no `#`
+                        on it at all.  Run it in the Markdown source — it edits
+                        the document, so the preview refuses it.  Needs a backend
+                        advertising the `edit` capability: after updating the
+                        plugin, run `./install.sh` and |:SimpleMarkdownRestart|.
+
+                                                      *:SimpleMarkdownRenumber*
+:[range]SimpleMarkdownRenumber
+                        Renumber the ordered lists the range touches, from the
+                        number each list declares.  A list written `1.` `1.` `1.`
+                        — which is what GFM renders as 1, 2, 3 — becomes `1.`
+                        `2.` `3.`; one starting at `5)` stays starting at `5)`
+                        and keeps its `)`.  Nested lists are numbered on their
+                        own, bullets are left alone, and everything after the
+                        marker is untouched.
+
+                        With no range the list the cursor is in is renumbered,
+                        including any list nested inside it.  `1.` lines inside a
+                        fenced code block are a code sample, not a list.
+
                                                           *:SimpleMarkdownLint*
 :SimpleMarkdownLint     Check the document and put what is wrong with it in the
                         |location-list|, opening it when there is anything to
@@ -272,6 +320,9 @@ Plugs, for your own bindings: >
     <Plug>(simplemarkdown-toggle-task)
     <Plug>(simplemarkdown-follow)
     <Plug>(simplemarkdown-format-table)
+    <Plug>(simplemarkdown-promote)          also in Visual mode
+    <Plug>(simplemarkdown-demote)           also in Visual mode
+    <Plug>(simplemarkdown-renumber)         also in Visual mode
     <Plug>(simplemarkdown-lint)
     <Plug>(simplemarkdown-next-heading)
     <Plug>(simplemarkdown-prev-heading)

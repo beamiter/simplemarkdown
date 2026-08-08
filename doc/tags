@@ -1,6 +1,7 @@
 :SimpleMarkdown	simplemarkdown.txt	/*:SimpleMarkdown*
 :SimpleMarkdownClose	simplemarkdown.txt	/*:SimpleMarkdownClose*
 :SimpleMarkdownDebug	simplemarkdown.txt	/*:SimpleMarkdownDebug*
+:SimpleMarkdownDemote	simplemarkdown.txt	/*:SimpleMarkdownDemote*
 :SimpleMarkdownExternal	simplemarkdown.txt	/*:SimpleMarkdownExternal*
 :SimpleMarkdownExternalClose	simplemarkdown.txt	/*:SimpleMarkdownExternalClose*
 :SimpleMarkdownExternalOpen	simplemarkdown.txt	/*:SimpleMarkdownExternalOpen*
@@ -12,7 +13,9 @@
 :SimpleMarkdownLint	simplemarkdown.txt	/*:SimpleMarkdownLint*
 :SimpleMarkdownLog	simplemarkdown.txt	/*:SimpleMarkdownLog*
 :SimpleMarkdownOpen	simplemarkdown.txt	/*:SimpleMarkdownOpen*
+:SimpleMarkdownPromote	simplemarkdown.txt	/*:SimpleMarkdownPromote*
 :SimpleMarkdownRefresh	simplemarkdown.txt	/*:SimpleMarkdownRefresh*
+:SimpleMarkdownRenumber	simplemarkdown.txt	/*:SimpleMarkdownRenumber*
 :SimpleMarkdownResize	simplemarkdown.txt	/*:SimpleMarkdownResize*
 :SimpleMarkdownRestart	simplemarkdown.txt	/*:SimpleMarkdownRestart*
 :SimpleMarkdownStyle	simplemarkdown.txt	/*:SimpleMarkdownStyle*

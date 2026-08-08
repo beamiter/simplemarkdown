@@ -62,6 +62,29 @@ pub enum Request {
         #[serde(default)]
         line: usize,
     },
+    /// A structural edit to the source: `promote`/`demote` shift heading levels,
+    /// `renumber` renumbers the ordered lists the range touches.  Answered with
+    /// the replacements to make and nothing else, for the same reason
+    /// `format_table` is: the daemon never touches a file.
+    ///
+    /// `from`..=`to` is the range the command was given.  When they are equal —
+    /// a bare `:SimpleMarkdownDemote`, i.e. the cursor's line — the ops that act
+    /// on headings take the whole section, which is what keeps the tree saying
+    /// what it said.
+    #[serde(rename = "edit")]
+    Edit {
+        id: u64,
+        /// `promote`, `demote` or `renumber`.  A closed set: an op the daemon
+        /// does not know is refused rather than guessed at.
+        #[serde(default)]
+        op: String,
+        #[serde(default)]
+        lines: Vec<String>,
+        #[serde(default)]
+        from: usize,
+        #[serde(default)]
+        to: usize,
+    },
     /// The heading tree, answered with `outline_result`.  Cheaper than a
     /// render by everything a render does: no width, no wrapping, no syntect —
     /// which is what lets folding, asked about once per line per redraw, be
@@ -205,6 +228,16 @@ pub enum Event {
         from: usize,
         to: usize,
         lines: Vec<String>,
+    },
+    /// The answer to `edit`: the replacements to make, in source order.  The
+    /// client applies them from the bottom up so one that changes the document's
+    /// height cannot invalidate the ranges above it.  An empty list means there
+    /// was nothing to do — no heading under the cursor, a list already numbered
+    /// — which is an answer, not an error.
+    #[serde(rename = "edit_result")]
+    EditResult {
+        id: u64,
+        edits: Vec<crate::format::Replacement>,
     },
     #[serde(rename = "outline_result")]
     OutlineResult { id: u64, toc: Vec<OutlineEntry> },

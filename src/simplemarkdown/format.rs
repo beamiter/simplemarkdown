@@ -23,10 +23,14 @@
 //! `git diff -w` on a formatted table is empty.
 
 use pulldown_cmark::{Alignment, Event, Options as MdOptions, Parser, Tag};
+use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
 /// A replacement for `from`..=`to` (1-based, inclusive) in the source.
-#[derive(Debug, PartialEq, Eq)]
+///
+/// Serialised as it stands for `edit_result`, which answers with a list of
+/// them; `format_result` predates that and flattens the one it has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Replacement {
     pub from: usize,
     pub to: usize,

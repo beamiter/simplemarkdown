@@ -91,6 +91,8 @@ own documentation never replaces a working one.
 :SimpleMarkdownToggleTask " toggle the task under either cursor
 :SimpleMarkdownFollow    " follow the link under the cursor, source side too
 :SimpleMarkdownFormatTable " realign the table the cursor is in
+:SimpleMarkdownDemote    " this section one heading level deeper (also Promote)
+:SimpleMarkdownRenumber  " renumber the ordered list the cursor is in
 :SimpleMarkdownLint      " what is wrong with this document, in the loclist
 :SimpleMarkdownStyle ascii
 :SimpleMarkdownHealth
@@ -118,6 +120,18 @@ alignments it declares, a short row is padded rather than truncated, and cell
 contents are moved but never reflowed, so the change is whitespace only. Which
 lines are the table comes from the parser: a `|` inside a fenced code block is
 not a table row.
+
+`:SimpleMarkdownPromote` and `:SimpleMarkdownDemote` move heading levels, and
+`:SimpleMarkdownRenumber` renumbers ordered lists. The usual way to do the
+first is `:%s/^#/##/`, which promotes the comments in every fenced shell block,
+misses every setext heading, and leaves a chapter's subsections behind when it
+takes the chapter down a level. With no range these take the whole section the
+cursor is in — heading and everything nested under it — so the tree still says
+what it said; with a range, exactly the headings inside it. Going past H1 or H6
+is refused whole and names the heading. Renumbering starts from the number the
+list declares, keeps `.` versus `)`, numbers nested lists on their own, and
+leaves the `1.` in a code sample alone. Each is one undo step, and only the
+lines that change are written.
 
 `:SimpleMarkdownLint` puts what is wrong with the document in the location
 list: a `#anchor` that matches no heading, a footnote referred to but never

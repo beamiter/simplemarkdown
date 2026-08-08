@@ -6,6 +6,7 @@
 //! render per keystroke burst, and Vim only ever wants the answer to the last.
 
 mod classes;
+mod edit;
 mod format;
 mod glyphs;
 mod highlight;
@@ -53,6 +54,7 @@ fn capabilities() -> BTreeMap<&'static str, bool> {
         ("incremental", true),
         ("blocks", true),
         ("format", true),
+        ("edit", true),
         ("lint", true),
         ("outline", true),
     ])
@@ -458,6 +460,47 @@ async fn serve() -> std::io::Result<()> {
                         Err(error) => Event::Error {
                             id,
                             message: format!("format failed: {error}"),
+                        },
+                    };
+                    send(&tx, event).await;
+                });
+            }
+            Request::Edit {
+                id,
+                op,
+                lines,
+                from,
+                to,
+            } => {
+                let tx = out_tx.clone();
+                let Some(op) = edit::Op::parse(&op) else {
+                    send(
+                        &tx,
+                        Event::Error {
+                            id,
+                            message: format!("unknown edit op: {op}"),
+                        },
+                    )
+                    .await;
+                    continue;
+                };
+                // Off the reactor for the same reason a format is: the parse is
+                // over the whole buffer, and the buffer belongs to someone who
+                // is also waiting for their next keystroke to be rendered.
+                tokio::spawn(async move {
+                    let done = tokio::task::spawn_blocking(move || {
+                        edit::edit(op, &lines, from.max(1), to.max(from.max(1)))
+                    })
+                    .await;
+                    let event = match done {
+                        Ok(Ok(edits)) => Event::EditResult { id, edits },
+                        // A refusal is the answer to a question a user asked and
+                        // is worth showing them verbatim ("promoting would take
+                        // \"Top\" past H1"); a panic is not.
+                        Ok(Err(message)) => Event::Error { id, message },
+                        Err(error) => Event::Error {
+                            id,
+                            message: format!("edit failed: {error}"),
                         },
                     };
                     send(&tx, event).await;

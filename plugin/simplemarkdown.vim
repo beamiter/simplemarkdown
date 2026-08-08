@@ -148,6 +148,13 @@ command! SimpleMarkdownToc simplemarkdown#Toc()
 command! SimpleMarkdownToggleTask simplemarkdown#ToggleTask()
 command! SimpleMarkdownFollow simplemarkdown#FollowUnderCursor()
 command! SimpleMarkdownFormatTable simplemarkdown#FormatTable()
+# The structural edits take a range.  Without one they act on the section the
+# cursor is in — heading and subsections together — rather than on its line
+# alone, because a heading shifted out from under its subsections describes a
+# document that is not there.
+command! -range SimpleMarkdownPromote simplemarkdown#Promote(<line1>, <line2>)
+command! -range SimpleMarkdownDemote simplemarkdown#Demote(<line1>, <line2>)
+command! -range SimpleMarkdownRenumber simplemarkdown#Renumber(<line1>, <line2>)
 command! SimpleMarkdownLint simplemarkdown#Lint()
 command! SimpleMarkdownRestart simplemarkdown#Restart()
 command! SimpleMarkdownHealth simplemarkdown#Health()
@@ -170,6 +177,14 @@ nnoremap <silent> <Plug>(simplemarkdown-toc) <Cmd>SimpleMarkdownToc<CR>
 nnoremap <silent> <Plug>(simplemarkdown-toggle-task) <Cmd>SimpleMarkdownToggleTask<CR>
 nnoremap <silent> <Plug>(simplemarkdown-follow) <Cmd>SimpleMarkdownFollow<CR>
 nnoremap <silent> <Plug>(simplemarkdown-format-table) <Cmd>SimpleMarkdownFormatTable<CR>
+nnoremap <silent> <Plug>(simplemarkdown-promote) <Cmd>SimpleMarkdownPromote<CR>
+nnoremap <silent> <Plug>(simplemarkdown-demote) <Cmd>SimpleMarkdownDemote<CR>
+nnoremap <silent> <Plug>(simplemarkdown-renumber) <Cmd>SimpleMarkdownRenumber<CR>
+# Visual mode goes through `:`, which is what fills the `'<,'>` in — a <Cmd>
+# mapping stays in Visual mode and the marks are not set yet when it runs.
+xnoremap <silent> <Plug>(simplemarkdown-promote) :SimpleMarkdownPromote<CR>
+xnoremap <silent> <Plug>(simplemarkdown-demote) :SimpleMarkdownDemote<CR>
+xnoremap <silent> <Plug>(simplemarkdown-renumber) :SimpleMarkdownRenumber<CR>
 nnoremap <silent> <Plug>(simplemarkdown-lint) <Cmd>SimpleMarkdownLint<CR>
 nnoremap <silent> <Plug>(simplemarkdown-next-heading) <Cmd>call simplemarkdown#NextHeading(1)<CR>
 nnoremap <silent> <Plug>(simplemarkdown-prev-heading) <Cmd>call simplemarkdown#NextHeading(-1)<CR>

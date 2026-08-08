@@ -1807,6 +1807,17 @@ def Warn(message: string)
 enddef
 
 
+# What an answer that arrived on the channel says when it went well.
+#
+# `echom` rather than `echo`: this runs in a channel callback, minutes of
+# thinking or milliseconds after the command, and a plain `echo` from there is
+# painted over by the next redraw with nothing left behind.  The result of a
+# command a user typed has to be findable in `:messages` afterwards.
+def Say(message: string)
+  echom '[SimpleMarkdown] ' .. message
+enddef
+
+
 # The preview text and src_map are one render snapshot.  A source edit, source
 # switch, or newer render request makes that snapshot unsafe for an editing
 # action even though it may remain useful to look at until the refresh lands.
@@ -2291,6 +2302,45 @@ def ReplaceRange(buf: number, from: number, to: number, replacement: list<string
 enddef
 
 
+# Everything a command that writes to the document has to be sure of before it
+# sends anything: that this is a source buffer holding Markdown, that it may be
+# written to, and that the backend on the other end understands the request.
+# Shared so that a new authoring command cannot quietly acquire a weaker set of
+# checks than the ones already here — the preview buffer in particular is a
+# scratch buffer whose text is a layout, and editing it edits nothing.
+def AuthoringReady(buf: number, capability: string, ability: string): bool
+  if IsPreviewBuffer(buf)
+    Warn('this command edits the document: run it in the source buffer.')
+    return false
+  endif
+  if !IsMarkdownBuffer(buf)
+    Warn('not a Markdown buffer.')
+    return false
+  endif
+  if !getbufvar(buf, '&modifiable')
+    Warn('buffer is not modifiable.')
+    return false
+  endif
+  if !EnsureBackend()
+    return false
+  endif
+  var mismatch = ProtocolMismatch()
+  if mismatch != 0
+    Warn(ProtocolMessage(mismatch))
+    return false
+  endif
+  # A daemon old enough to predate this request answers `invalid request`,
+  # which arrives as an opaque error some time after the keystroke.  The
+  # handshake already said what this one can do.
+  if simplemarkdown#core#Ready() && !simplemarkdown#core#HasCap(capability)
+    Warn(printf('this backend cannot %s. Run ./install.sh, then :SimpleMarkdownRestart.',
+      ability))
+    return false
+  endif
+  return true
+enddef
+
+
 # The daemon owns table formatting for the same reason it owns the preview: a
 # column is as wide as its widest cell *on screen*, and the only measure
 # Vimscript has for that is strdisplaywidth(), which answers for the terminal
@@ -2299,31 +2349,7 @@ enddef
 # mistaken for a row and a table inside a block quote keeps its `> `.
 export def FormatTable()
   var buf = bufnr('%')
-  if IsPreviewBuffer(buf)
-    Warn('formatting edits the document: run it in the source buffer.')
-    return
-  endif
-  if !IsMarkdownBuffer(buf)
-    Warn('not a Markdown buffer.')
-    return
-  endif
-  if !getbufvar(buf, '&modifiable')
-    Warn('buffer is not modifiable.')
-    return
-  endif
-  if !EnsureBackend()
-    return
-  endif
-  var mismatch = ProtocolMismatch()
-  if mismatch != 0
-    Warn(ProtocolMessage(mismatch))
-    return
-  endif
-  # A daemon old enough to predate this request answers `invalid request`,
-  # which arrives as an opaque error some time after the keystroke.  The
-  # handshake already said what this one can do.
-  if simplemarkdown#core#Ready() && !simplemarkdown#core#HasCap('format')
-    Warn('this backend cannot format tables. Run ./install.sh, then :SimpleMarkdownRestart.')
+  if !AuthoringReady(buf, 'format', 'format tables')
     return
   endif
 
@@ -2370,13 +2396,107 @@ def OnFormatReply(buf: number, tick: number, reply: dict<any>)
     return
   endif
   if getbufline(buf, from, to) ==# replacement
-    echo '[SimpleMarkdown] the table is already aligned'
+    Say('the table is already aligned')
     return
   endif
   ReplaceRange(buf, from, to, replacement)
   ScheduleSourceSessions(buf, 0)
-  echo printf('[SimpleMarkdown] aligned %d table row%s',
-    len(replacement), len(replacement) == 1 ? '' : 's')
+  Say(printf('aligned %d table row%s',
+    len(replacement), len(replacement) == 1 ? '' : 's'))
+enddef
+
+
+# `:SimpleMarkdownPromote`, `:SimpleMarkdownDemote` and `:SimpleMarkdownRenumber`
+# — the structural edits, all three the same round trip with a different verb.
+#
+# The daemon is asked rather than a pattern applied for the reason it renders:
+# a `#` at the start of a line inside a fenced shell block is a comment, `1.` in
+# a code sample is not a list item, and a setext underline makes a heading out
+# of a line with no `#` on it at all.  `:%s/^#/##/` gets all three wrong, and
+# the last one it cannot even see.
+#
+# `from` and `to` are the command's range.  Equal — which is what a bare
+# `:SimpleMarkdownDemote` gives, the cursor's line — means the whole section for
+# the heading ops, so a chapter takes its subsections down with it and the tree
+# still says what it said.  A range the user drew means exactly the headings
+# inside it.
+export def Promote(from: number, to: number)
+  SendEdit('promote', from, to)
+enddef
+
+export def Demote(from: number, to: number)
+  SendEdit('demote', from, to)
+enddef
+
+export def Renumber(from: number, to: number)
+  SendEdit('renumber', from, to)
+enddef
+
+# What each op is called when something has to be said about it: the ability
+# for a capability refusal, and the past tense for the count afterwards.
+const EDIT_VERBS: dict<list<string>> = {
+  promote: ['shift heading levels', 'promoted', 'heading'],
+  demote: ['shift heading levels', 'demoted', 'heading'],
+  renumber: ['renumber lists', 'renumbered', 'list item'],
+}
+
+def SendEdit(op: string, from: number, to: number)
+  var buf = bufnr('%')
+  if !AuthoringReady(buf, 'edit', EDIT_VERBS[op][0])
+    return
+  endif
+  # The reply names lines in the document that was sent; the tick is what makes
+  # applying it to a buffer that has moved on impossible rather than unlikely.
+  var tick: number = getbufvar(buf, 'changedtick')
+  var sent = simplemarkdown#core#Request({
+    type: 'edit',
+    id: NextId(),
+    op: op,
+    lines: getbufline(buf, 1, '$'),
+    from: from,
+    to: to,
+  }, (reply) => OnEditReply(buf, tick, op, reply), RENDER_TIMEOUT_MS)
+  if sent == 0
+    Warn('the backend is not running.')
+  endif
+enddef
+
+
+def OnEditReply(buf: number, tick: number, op: string, reply: dict<any>)
+  if get(reply, '_failed', false) || get(reply, 'type', '') ==# 'error'
+    # A refusal — "promoting would take "Top" past H1" — is the answer to what
+    # the user asked and is shown as it came.
+    Warn(get(reply, 'message', 'the backend could not make this edit.'))
+    return
+  endif
+  if !bufexists(buf)
+    return
+  endif
+  if getbufvar(buf, 'changedtick') != tick
+    Warn('the buffer changed while the edit was being worked out.')
+    return
+  endif
+  if !getbufvar(buf, '&modifiable')
+    Warn('buffer is not modifiable.')
+    return
+  endif
+  var edits: list<any> = get(reply, 'edits', [])
+  if empty(edits)
+    Say(op ==# 'renumber'
+      ? 'no ordered list here, or it is already numbered'
+      : 'no heading here')
+    return
+  endif
+  # Bottom up: a setext heading demoted past H2 becomes one ATX line, and every
+  # range above an edit that changes the document's height is only valid while
+  # that edit has not been made yet.
+  for change in sort(copy(edits), (a, b) => get(b, 'from', 0) - get(a, 'from', 0))
+    ReplaceRange(buf, get(change, 'from', 0), get(change, 'to', 0),
+      get(change, 'lines', []))
+  endfor
+  ScheduleSourceSessions(buf, 0)
+  Say(printf('%s %d %s%s', EDIT_VERBS[op][1], len(edits),
+    EDIT_VERBS[op][2], len(edits) == 1 ? '' : 's'))
 enddef
 
 # ─────────────────────────── diagnostics ───────────────────────────

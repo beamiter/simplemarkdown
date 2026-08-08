@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-lint test-outline test-protocol test-external clean vim-core defcompile check-classes check-codes check-protocol preview bench core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-authoring test-lint test-outline test-protocol test-external clean vim-core defcompile check-classes check-codes check-protocol preview bench core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon check-protocol check-classes check-codes defcompile vim-core test-vim test-links test-format test-lint test-outline test-protocol test-external
+check: core-verify fmt clippy test test-daemon check-protocol check-classes check-codes defcompile vim-core test-vim test-links test-format test-authoring test-lint test-outline test-protocol test-external
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -135,6 +135,14 @@ test-links: build
 # range wrong corrupts a file rather than drawing something odd.
 test-format: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_format.vim
+
+# The structural edits: heading levels and list numbers.  Its own file rather
+# than more of test-format because what they have to get right is different — a
+# table is one span, a demoted section is several splices that must undo as one,
+# and both a `#` in a fenced block and a `1.` in a code sample are bait for the
+# pattern matching this deliberately does not do.
+test-authoring: build
+	vim -Nu NONE -n -i NONE -es -S tests/vim_authoring.vim
 
 # Diagnostics: the codes, lines and severities that reach the location list,
 # and the two behaviours that decide whether a linter is usable — that it

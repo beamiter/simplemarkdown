@@ -37,6 +37,30 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **`:SimpleMarkdownPromote`, `:SimpleMarkdownDemote` and
+  `:SimpleMarkdownRenumber` restructure the source.** Shifting heading levels is
+  the most common structural edit there is, and the received way to do it is
+  `:%s/^#/##/` — which turns the comments of every fenced shell block into
+  headings, misses every setext heading (an `====` underline makes a heading of
+  a line with no `#` on it at all), and takes a chapter one level down while
+  leaving its subsections where they were. All three are parsing questions, and
+  the parser is already running. With no range the whole section the cursor is
+  in moves — heading and everything nested under it — so the tree the document
+  describes still says what it said; with a range, exactly the headings inside
+  it. A setext heading keeps its form where it can, its underline switching
+  between `=` and `-`, and becomes an ATX heading below H2 because setext has no
+  H3. Going past H1 or H6 is refused whole and names the heading, since half a
+  shift leaves a structure nothing recorded. `renumber` renumbers the ordered
+  lists the range touches from the number each declares: the `1.` `1.` `1.` GFM
+  renders as 1, 2, 3 becomes what it renders as, a list starting at `5)` keeps
+  both its start and its `)`, nested lists are numbered on their own, and `1.`
+  in a code sample stays a code sample. Each answer is a list of replacements
+  applied bottom-up, so the prose between two headings — and its marks, and its
+  undo history — is left alone, and the whole edit is one `u`. New capability
+  `edit`, new `<Plug>(simplemarkdown-promote)`, `(-demote)` and `(-renumber)` in
+  Normal and Visual mode; a backend that predates them says so instead of
+  failing obscurely.
+
 - **The outline is its own question now, and three things ask it.** A render's
   table of contents is a by-product of laying rows out for a window of some
   width — it needs syntect, and it only exists where a preview does. The
@@ -251,6 +275,12 @@ All notable changes to this project are documented here.  The format follows
   wrong rows.
 
 ### Changed
+
+- What an authoring command says when it went well now reaches `:messages`.
+  Those lines are printed from a channel callback, which is to say some time
+  after the keystroke that asked for them, and a plain `echo` from there is
+  painted over by the next redraw with nothing left behind — so "the table is
+  already aligned" was an answer a user could receive and never see.
 
 - `:SimpleMarkdownToc` with no preview open used to call the preview open —
   a table of contents is a question about the document, not a request for a
