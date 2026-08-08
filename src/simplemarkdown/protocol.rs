@@ -46,6 +46,22 @@ pub enum Request {
         #[serde(default)]
         session: String,
     },
+    /// Realign the GFM table containing source line `line`.  Answered with the
+    /// replacement for the table's own lines and nothing else, so the client
+    /// edits a range it can undo rather than rewriting the buffer.
+    ///
+    /// Deliberately not a `render` option: this hands text back to be written
+    /// into the document, and confusing "what the document says" with "what the
+    /// preview shows" is how a preview plugin corrupts a file.
+    #[serde(rename = "format_table")]
+    FormatTable {
+        id: u64,
+        #[serde(default)]
+        lines: Vec<String>,
+        /// 1-based source line the cursor is on.
+        #[serde(default)]
+        line: usize,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +177,16 @@ pub enum Event {
     },
     #[serde(rename = "render_result")]
     RenderResult(Box<RenderResult>),
+    /// The answer to `format_table`: replace source lines `from`..=`to` with
+    /// `lines`.  `from` is 0 when the cursor was not in a table, which is a
+    /// perfectly ordinary thing for a user to ask and not an error.
+    #[serde(rename = "format_result")]
+    FormatResult {
+        id: u64,
+        from: usize,
+        to: usize,
+        lines: Vec<String>,
+    },
     #[serde(rename = "error")]
     Error { id: u64, message: String },
 }

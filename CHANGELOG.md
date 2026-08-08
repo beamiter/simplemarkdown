@@ -37,6 +37,23 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **`:SimpleMarkdownFormatTable` realigns the GFM table the cursor is in.** The
+  first command here that writes Markdown rather than reading it, and the first
+  reason the daemon is worth having for something other than the preview: a
+  column is as wide as its widest cell *on screen*, and the only measure
+  Vimscript has for that is `strdisplaywidth()`, which answers for the terminal
+  it is running in rather than for the file — so every Vimscript table aligner
+  lines a CJK or emoji table up for its author and for nobody else. The widths
+  come from the same `unicode-width` tables the preview is laid out with, and
+  which lines are the table comes from the parser, so a `|` inside a fenced code
+  block is not a table row and a table inside a block quote keeps its `> `. The
+  delimiter row is rebuilt from the alignments it declares, a row short of a
+  cell is padded rather than truncated, and cell contents are moved but never
+  reflowed: the whole edit is whitespace, in one undo step, over the table's own
+  lines and nothing else. New capability `format`, new
+  `<Plug>(simplemarkdown-format-table)`; a backend that predates it says so
+  instead of failing obscurely.
+
 - **An inserted line is a patch, not a whole document** (protocol v3). A row's
   source line used to be part of its identity, so pressing Enter — which moves
   every row below it in the row → source map and moves nothing on screen — left
@@ -146,6 +163,18 @@ All notable changes to this project are documented here.  The format follows
   spending a row on every URL (`g:simplemarkdown_link_hint`).
 
 ### Fixed
+
+- **The plugin and its supervisor no longer count request ids separately.** Both
+  end up as keys in one pending table, and the plugin started at 1 — colliding
+  with the handshake the supervisor already had in flight at exactly the moment
+  a preview opens. The `pong` then resolved the first render's callback and the
+  render's own reply found nobody waiting. A render recovered from it (the
+  echoed width did not match, so it resynchronised and asked again), which is
+  why it went unnoticed for so long; a one-shot request such as a table format
+  simply never arrived. Ids now come from one sequence. While it was in the way:
+  a render refused by a daemon speaking another protocol used to overwrite the
+  version-skew explanation in the preview window with the daemon's own
+  `unknown type render`, which is true and useless.
 
 - **`:SimpleMarkdownDebug` counts patches that were kept, not patches that were
   tried.** A patch is spliced in first and only then checked against the row

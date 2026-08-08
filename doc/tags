@@ -7,6 +7,7 @@
 :SimpleMarkdownExternalStatic	simplemarkdown.txt	/*:SimpleMarkdownExternalStatic*
 :SimpleMarkdownFocus	simplemarkdown.txt	/*:SimpleMarkdownFocus*
 :SimpleMarkdownFollow	simplemarkdown.txt	/*:SimpleMarkdownFollow*
+:SimpleMarkdownFormatTable	simplemarkdown.txt	/*:SimpleMarkdownFormatTable*
 :SimpleMarkdownHealth	simplemarkdown.txt	/*:SimpleMarkdownHealth*
 :SimpleMarkdownLog	simplemarkdown.txt	/*:SimpleMarkdownLog*
 :SimpleMarkdownOpen	simplemarkdown.txt	/*:SimpleMarkdownOpen*

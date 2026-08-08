@@ -90,6 +90,7 @@ own documentation never replaces a working one.
 :SimpleMarkdownToc       " headings, in a popup
 :SimpleMarkdownToggleTask " toggle the task under either cursor
 :SimpleMarkdownFollow    " follow the link under the cursor, source side too
+:SimpleMarkdownFormatTable " realign the table the cursor is in
 :SimpleMarkdownStyle ascii
 :SimpleMarkdownHealth
 ```
@@ -106,6 +107,16 @@ nested/quoted task lists too. A preview only edits through a map for the exact
 source revision it rendered; if the source changed in the meantime, `x` refuses
 the stale action and refreshes. When several tabs preview the same buffer,
 edits refresh all of their sessions together.
+
+`:SimpleMarkdownFormatTable` realigns the GFM table the cursor is in, in the
+source buffer. Columns are padded to their widest cell in *display* columns —
+measured by the daemon, with the same `unicode-width` tables the preview is
+laid out with, so a table of CJK cells lines up in the file and not merely in
+the terminal that formatted it. The delimiter row is rebuilt from the
+alignments it declares, a short row is padded rather than truncated, and cell
+contents are moved but never reflowed, so the change is whitespace only. Which
+lines are the table comes from the parser: a `|` inside a fenced code block is
+not a table row.
 
 Links resolve to GitHub's heading slugs, so `#notes-part-one` finds
 `## Notes: part one!` and `#notes-1` finds the second `## Notes`;

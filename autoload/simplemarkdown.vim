@@ -126,7 +126,6 @@ var sessions: dict<any> = {}
 var requests: dict<string> = {}
 var prop_types_ready = false
 var core_ready = false
-var next_request_id = 0
 var last_elapsed_ms = -1
 # How the last renders were applied.  Worth counting: a patch path that has
 # quietly stopped patching is invisible otherwise — the preview stays correct,
@@ -222,9 +221,15 @@ def OnDaemonExit(code: number, restarting: bool)
 enddef
 
 
+# Request ids come from the supervisor's sequence, not a second one of our own.
+# Both end up as keys in the same pending table, and a plugin that starts
+# counting at 1 collides with the handshake the supervisor has in flight at
+# exactly the moment a session opens: the `pong` then resolves the first
+# request's callback and the request's own reply finds nobody waiting.  A
+# render recovers from that (the width does not match, so it resynchronises and
+# asks again), which is why it went unnoticed; a one-shot request does not.
 def NextId(): number
-  next_request_id += 1
-  return next_request_id
+  return simplemarkdown#core#NextId()
 enddef
 
 # ─────────────────────────── highlights ───────────────────────────
@@ -840,7 +845,12 @@ def OnRenderReply(
   if get(reply, 'type', '') ==# 'error' || get(reply, '_failed', false)
     var message = get(reply, 'message', 'render failed')
     Log('render error: ' .. message)
-    Placeholder(key, message)
+    # A render issued before the handshake landed and refused by a daemon that
+    # speaks another protocol answers with whatever that daemon says about the
+    # request — `unknown type render`, say.  True, and useless: the reason is
+    # the version skew, and that is what the window has to keep saying.
+    var mismatch = ProtocolMismatch()
+    Placeholder(key, mismatch != 0 ? ProtocolMessage(mismatch) : message)
     return
   endif
   if get(reply, 'type', '') !=# 'render_result'
@@ -1775,7 +1785,7 @@ def TaskMarker(text: string): number
 enddef
 
 
-def TaskWarning(message: string)
+def Warn(message: string)
   echohl WarningMsg
   echom '[SimpleMarkdown] ' .. message
   echohl None
@@ -1803,14 +1813,14 @@ enddef
 export def ToggleTask()
   var key = CurrentPreviewSession()
   if key ==# '' || !has_key(sessions, key)
-    TaskWarning('no preview session in this tab page.')
+    Warn('no preview session in this tab page.')
     return
   endif
   var session = sessions[key]
   var src = 0
   if win_getid() == session.winid
     if !SourceMapCurrent(session)
-      TaskWarning('preview mapping is stale; refreshing.')
+      Warn('preview mapping is stale; refreshing.')
       ScheduleSourceSessions(session.src_bufnr, 0)
       return
     endif
@@ -1820,17 +1830,17 @@ export def ToggleTask()
     src = line('.')
   endif
   if src <= 0
-    TaskWarning('no task on this preview row.')
+    Warn('no task on this preview row.')
     return
   endif
   if !getbufvar(session.src_bufnr, '&modifiable')
-    TaskWarning('source buffer is not modifiable.')
+    Warn('source buffer is not modifiable.')
     return
   endif
   var source = get(getbufline(session.src_bufnr, src), 0, '')
   var marker = TaskMarker(source)
   if marker < 0
-    TaskWarning('source line is not a task item.')
+    Warn('source line is not a task item.')
     return
   endif
   var checked = source[marker + 1] !=# ' '
@@ -1838,7 +1848,7 @@ export def ToggleTask()
   var updated = strpart(source, 0, marker + 1) .. replacement
         \ .. strpart(source, marker + 2)
   if setbufline(session.src_bufnr, src, updated) != 0
-    TaskWarning('could not update the source buffer.')
+    Warn('could not update the source buffer.')
     return
   endif
   ScheduleSourceSessions(session.src_bufnr, 0)
@@ -2241,6 +2251,117 @@ export def FollowUnderCursor()
     return
   endif
   FollowHref(href, buf)
+enddef
+
+
+# ─────────────────────────── authoring ───────────────────────────
+
+# Replace source lines `from`..`to` of `buf` with `replacement`.
+#
+# Equal counts are the common case and are one `setbufline()`, hence one undo
+# step — a formatter a user cannot undo with a single `u` is one they stop
+# using.  The unequal cases are handled rather than refused so that an
+# operation which does change a document's height has somewhere to land.
+def ReplaceRange(buf: number, from: number, to: number, replacement: list<string>)
+  var had = to - from + 1
+  var common = min([had, len(replacement)])
+  if common > 0
+    setbufline(buf, from, replacement[0 : common - 1])
+  endif
+  if len(replacement) > had
+    appendbufline(buf, from + common - 1, replacement[common : ])
+  elseif len(replacement) < had
+    deletebufline(buf, from + common, to)
+  endif
+enddef
+
+
+# The daemon owns table formatting for the same reason it owns the preview: a
+# column is as wide as its widest cell *on screen*, and the only measure
+# Vimscript has for that is strdisplaywidth(), which answers for the terminal
+# this Vim is running in rather than for the file.  Asking also settles which
+# lines are the table with a parser, so a `|` inside a fenced code block is not
+# mistaken for a row and a table inside a block quote keeps its `> `.
+export def FormatTable()
+  var buf = bufnr('%')
+  if IsPreviewBuffer(buf)
+    Warn('formatting edits the document: run it in the source buffer.')
+    return
+  endif
+  if !IsMarkdownBuffer(buf)
+    Warn('not a Markdown buffer.')
+    return
+  endif
+  if !getbufvar(buf, '&modifiable')
+    Warn('buffer is not modifiable.')
+    return
+  endif
+  if !EnsureBackend()
+    return
+  endif
+  var mismatch = ProtocolMismatch()
+  if mismatch != 0
+    Warn(ProtocolMessage(mismatch))
+    return
+  endif
+  # A daemon old enough to predate this request answers `invalid request`,
+  # which arrives as an opaque error some time after the keystroke.  The
+  # handshake already said what this one can do.
+  if simplemarkdown#core#Ready() && !simplemarkdown#core#HasCap('format')
+    Warn('this backend cannot format tables. Run ./install.sh, then :SimpleMarkdownRestart.')
+    return
+  endif
+
+  # The reply names line numbers in the document that was sent.  Recording the
+  # tick here is what makes applying it to a buffer that has moved on
+  # impossible rather than merely unlikely.
+  var tick: number = getbufvar(buf, 'changedtick')
+  var sent = simplemarkdown#core#Request({
+    type: 'format_table',
+    id: NextId(),
+    lines: getbufline(buf, 1, '$'),
+    line: line('.'),
+  }, (reply) => OnFormatReply(buf, tick, reply), RENDER_TIMEOUT_MS)
+  if sent == 0
+    Warn('the backend is not running.')
+  endif
+enddef
+
+
+def OnFormatReply(buf: number, tick: number, reply: dict<any>)
+  if get(reply, '_failed', false) || get(reply, 'type', '') ==# 'error'
+    Warn(get(reply, 'message', 'the backend could not format this table.'))
+    return
+  endif
+  var from = get(reply, 'from', 0)
+  if from <= 0
+    Warn('no table under the cursor.')
+    return
+  endif
+  if !bufexists(buf)
+    return
+  endif
+  if getbufvar(buf, 'changedtick') != tick
+    Warn('the buffer changed while the table was being formatted.')
+    return
+  endif
+  if !getbufvar(buf, '&modifiable')
+    Warn('buffer is not modifiable.')
+    return
+  endif
+  var to = get(reply, 'to', from)
+  var replacement: list<string> = get(reply, 'lines', [])
+  if empty(replacement) || to < from
+    return
+  endif
+  if getbufline(buf, from, to) ==# replacement
+    echo '[SimpleMarkdown] the table is already aligned'
+    return
+  endif
+  ReplaceRange(buf, from, to, replacement)
+  ScheduleSourceSessions(buf, 0)
+  echo printf('[SimpleMarkdown] aligned %d table row%s',
+    len(replacement), len(replacement) == 1 ? '' : 's')
 enddef
 
 

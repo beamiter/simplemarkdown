@@ -6,6 +6,7 @@
 //! render per keystroke burst, and Vim only ever wants the answer to the last.
 
 mod classes;
+mod format;
 mod glyphs;
 mod highlight;
 mod inline;
@@ -48,6 +49,7 @@ fn capabilities() -> BTreeMap<&'static str, bool> {
         ("ascii", true),
         ("incremental", true),
         ("blocks", true),
+        ("format", true),
     ])
 }
 
@@ -390,6 +392,35 @@ async fn serve() -> std::io::Result<()> {
             }
             Request::Forget { session } => {
                 sessions.lock().await.remove(&session);
+            }
+            Request::FormatTable { id, lines, line } => {
+                // Off the reactor like a render: the parse is over the whole
+                // buffer, and a document large enough to be worth formatting a
+                // table in is large enough to stall a keystroke's preview.
+                let tx = out_tx.clone();
+                tokio::spawn(async move {
+                    let found =
+                        tokio::task::spawn_blocking(move || format::table_at(&lines, line)).await;
+                    let event = match found {
+                        Ok(Some(replacement)) => Event::FormatResult {
+                            id,
+                            from: replacement.from,
+                            to: replacement.to,
+                            lines: replacement.lines,
+                        },
+                        Ok(None) => Event::FormatResult {
+                            id,
+                            from: 0,
+                            to: 0,
+                            lines: Vec::new(),
+                        },
+                        Err(error) => Event::Error {
+                            id,
+                            message: format!("format failed: {error}"),
+                        },
+                    };
+                    send(&tx, event).await;
+                });
             }
             Request::Render(request) => {
                 let tx = out_tx.clone();

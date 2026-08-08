@@ -138,6 +138,7 @@ command! SimpleMarkdownFocus simplemarkdown#Focus()
 command! SimpleMarkdownToc simplemarkdown#Toc()
 command! SimpleMarkdownToggleTask simplemarkdown#ToggleTask()
 command! SimpleMarkdownFollow simplemarkdown#FollowUnderCursor()
+command! SimpleMarkdownFormatTable simplemarkdown#FormatTable()
 command! SimpleMarkdownRestart simplemarkdown#Restart()
 command! SimpleMarkdownHealth simplemarkdown#Health()
 command! SimpleMarkdownLog simplemarkdown#ShowLog()
@@ -158,6 +159,7 @@ nnoremap <silent> <Plug>(simplemarkdown-focus) <Cmd>SimpleMarkdownFocus<CR>
 nnoremap <silent> <Plug>(simplemarkdown-toc) <Cmd>SimpleMarkdownToc<CR>
 nnoremap <silent> <Plug>(simplemarkdown-toggle-task) <Cmd>SimpleMarkdownToggleTask<CR>
 nnoremap <silent> <Plug>(simplemarkdown-follow) <Cmd>SimpleMarkdownFollow<CR>
+nnoremap <silent> <Plug>(simplemarkdown-format-table) <Cmd>SimpleMarkdownFormatTable<CR>
 nnoremap <silent> <Plug>(simplemarkdown-next-heading) <Cmd>call simplemarkdown#NextHeading(1)<CR>
 nnoremap <silent> <Plug>(simplemarkdown-prev-heading) <Cmd>call simplemarkdown#NextHeading(-1)<CR>
 

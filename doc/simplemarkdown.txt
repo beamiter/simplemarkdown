@@ -128,6 +128,37 @@ second one.
                         taken, which is what pressing the key on a line with one
                         link means.  See |simplemarkdown-links|.
 
+                                                   *:SimpleMarkdownFormatTable*
+:SimpleMarkdownFormatTable
+                        Realign the GFM table the cursor is in.  Every column
+                        is padded to its widest cell and the delimiter row is
+                        rebuilt from the alignments it declares, so `|:-|` and
+                        `| :--- |` come out the same.  A row short of a cell is
+                        padded rather than truncated: a formatter should not
+                        delete text.  Cell contents are moved, never reflowed,
+                        so the whole change is whitespace and `git diff -w` of
+                        it is empty.
+
+                        Column widths are display columns, measured by the
+                        backend with the same tables the preview is laid out
+                        with.  That is the point of asking it: a Vimscript
+                        aligner measures with |strdisplaywidth()|, which
+                        answers for the terminal it is running in rather than
+                        for the file, so a table of CJK or emoji cells lines up
+                        for its author and for nobody else.
+
+                        Which lines are the table is decided by the parser, not
+                        by a pattern: a `|` inside a fenced code block is not a
+                        table row, and a table inside a block quote keeps its
+                        `> `.  Only the table's own lines are rewritten, in one
+                        undo step.
+
+                        Run it in the Markdown source — it edits the document,
+                        so the preview refuses it.  With the cursor outside any
+                        table it says so and changes nothing.  Needs a backend
+                        advertising the `format` capability: after updating the
+                        plugin, run `./install.sh` and |:SimpleMarkdownRestart|.
+
                                                         *:SimpleMarkdownResize*
 :SimpleMarkdownResize [{columns}]
                         Resize the preview window.  With no argument, re-apply
@@ -203,6 +234,7 @@ Plugs, for your own bindings: >
     <Plug>(simplemarkdown-toc)
     <Plug>(simplemarkdown-toggle-task)
     <Plug>(simplemarkdown-follow)
+    <Plug>(simplemarkdown-format-table)
     <Plug>(simplemarkdown-next-heading)
     <Plug>(simplemarkdown-prev-heading)
     <Plug>(simplemarkdown-external)

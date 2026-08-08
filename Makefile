@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-protocol test-external clean vim-core defcompile check-classes check-protocol preview bench core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-protocol test-external clean vim-core defcompile check-classes check-protocol preview bench core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon check-protocol check-classes defcompile vim-core test-vim test-links test-protocol test-external
+check: core-verify fmt clippy test test-daemon check-protocol check-classes defcompile vim-core test-vim test-links test-format test-protocol test-external
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -116,6 +116,13 @@ test-vim: build
 # file because it needs a docs tree on disk, not the smoke test's one buffer.
 test-links: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_links.vim
+
+# Table formatting: the one command that writes to the document rather than
+# reading it.  Its own file because it needs a buffer with a CJK cell, a ragged
+# row and a fenced block full of pipes, and because a formatter that gets its
+# range wrong corrupts a file rather than drawing something odd.
+test-format: build
+	vim -Nu NONE -n -i NONE -es -S tests/vim_format.vim
 
 # Version skew: a plugin updated without its daemon rebuilt.  `check-protocol`
 # above proves the three declarations agree; this proves what happens when they
