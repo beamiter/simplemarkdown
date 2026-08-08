@@ -102,6 +102,15 @@ All notable changes to this project are documented here.  The format follows
   an image is.
 - Text-property groups are applied in a stable order, so a patched render and a
   full one paint identically where two classes start at the same column.
+- **CI runs `make check`.** It used to hand-list a subset of the Makefile's
+  targets, and that list had drifted: it asserted `"protocol_version":1` while
+  the daemon has emitted 2 since the incremental-render work, so every push
+  failed at the handshake step — before the Vim suites, the class-list check or
+  `:defcompile` ever ran, and it never ran `core-verify` at all. The MSRV job's
+  toolchain is now read out of `Cargo.toml` instead of being written down a
+  second time. New `make check-protocol` asserts that `protocol.rs`,
+  `autoload/simplemarkdown.vim` and the running daemon's handshake all state
+  the same version; nothing in the gate hardcodes a version number any more.
 - `<CR>` in the preview now resolves a link exactly as `gx` does.  It asked for
   the row's link and then re-tested that the cursor was inside it, discarding
   the row fallback that lookup exists to provide, so the two keys disagreed

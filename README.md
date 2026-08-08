@@ -191,11 +191,17 @@ treat them as single width.
 ## Develop
 
 ```sh
-make test          # fmt, clippy, Rust tests, daemon protocol, Vim suites
-make preview       # render the fixture to the terminal; WIDTH=100 to change
-make check-classes # prove the Rust and Vim text-property class lists agree
-make test-external # the browser preview, against a stand-in for omd
+make check          # the gate: fmt, clippy, Rust tests, daemon, Vim suites
+make test           # the Rust tests alone
+make preview        # render the fixture to the terminal; WIDTH=100 to change
+make check-protocol # Rust, Vim and the handshake agree on the protocol version
+make check-classes  # prove the Rust and Vim text-property class lists agree
+make test-links     # link following, from the preview and from the source
+make test-external  # the browser preview, against a stand-in for omd
 ```
+
+CI runs `make check` and nothing else, so the Makefile is the only place the
+gate is described.
 
 `make preview` is the fastest way to review a layout change: the diff of two
 runs is the whole review.

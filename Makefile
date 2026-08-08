@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-external clean vim-core defcompile check-classes preview bench core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-external clean vim-core defcompile check-classes check-protocol preview bench core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon check-classes defcompile vim-core test-vim test-links test-external
+check: core-verify fmt clippy test test-daemon check-protocol check-classes defcompile vim-core test-vim test-links test-external
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -45,6 +45,29 @@ test-daemon: build
 			|| { echo "run $$run: $$got replies, want 3 (a reply was lost at exit)"; exit 1; }; \
 	done
 	@echo "daemon: replies survive stdin EOF"
+
+# The protocol version is stated three times: in Rust, in Vim, and by the
+# running daemon's handshake.  The plugin refuses to talk to a daemon whose
+# version it does not know, so a bump applied to one and not the other is a
+# preview that never draws — and CI used to assert a *literal* version here,
+# which is how it stayed red for the whole life of v2 while asserting v1.
+# Nothing is hardcoded below: every number is read from the source that owns it.
+check-protocol: build
+	@rust="$$(sed -n 's/^pub const PROTOCOL_VERSION: u32 = \([0-9]\+\);.*/\1/p' \
+		src/simplemarkdown/protocol.rs)"; \
+	vim_="$$(sed -n 's/^const PROTOCOL_VERSION = \([0-9]\+\).*/\1/p' \
+		autoload/simplemarkdown.vim)"; \
+	test -n "$$rust" || { echo "no PROTOCOL_VERSION in src/simplemarkdown/protocol.rs"; exit 1; }; \
+	test -n "$$vim_" || { echo "no PROTOCOL_VERSION in autoload/simplemarkdown.vim"; exit 1; }; \
+	test "$$rust" = "$$vim_" \
+		|| { echo "protocol: Rust says v$$rust, Vim expects v$$vim_"; exit 1; }; \
+	reply="$$(printf '%s\n' '{"type":"ping","id":1}' \
+		| ./target/release/simplemarkdown-daemon)"; \
+	printf '%s' "$$reply" | grep -qF "\"protocol_version\":$$rust" \
+		|| { echo "protocol: the handshake does not declare v$$rust: $$reply"; exit 1; }; \
+	printf '%s' "$$reply" | grep -qF '"render":true' \
+		|| { echo "protocol: the handshake does not advertise the render capability"; exit 1; }; \
+	echo "protocol: Rust, Vim and the handshake all say v$$rust"
 
 # The Vim side registers one text-property type per class the daemon may emit.
 # A class present in Rust but missing in Vim is a hard prop_add() error inside
