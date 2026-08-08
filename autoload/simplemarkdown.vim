@@ -522,15 +522,79 @@ def OpenForCurrentTab(): string
 enddef
 
 
+# Everything the preview window binds, as `[action, default key, <Plug>, what
+# it does]`.  One table, used three ways: to install the buffer maps, to answer
+# `g?`, and — because a cheat sheet that lies is worse than none — to show the
+# keys actually in force after |g:simplemarkdown_preview_mappings| has had its
+# say.  Each action maps onto a <Plug> rather than a call, so a user can bind
+# any of them anywhere without copying an implementation detail.
+const PREVIEW_MAPPINGS: list<list<string>> = [
+  ['close', 'q', '<Plug>(simplemarkdown-preview-close)', 'close the preview'],
+  ['refresh', 'r', '<Plug>(simplemarkdown-preview-refresh)',
+    're-render this document in every tab'],
+  ['activate', '<CR>', '<Plug>(simplemarkdown-preview-activate)',
+    'follow the link on this row, or jump the source to the line it came from'],
+  ['open-link', 'gx', '<Plug>(simplemarkdown-follow)', 'follow the link on this row'],
+  ['toc', 'gO', '<Plug>(simplemarkdown-toc)', 'table of contents'],
+  ['toggle-task', 'x', '<Plug>(simplemarkdown-toggle-task)',
+    'check or uncheck this task in the Markdown source'],
+  ['next-heading', ']]', '<Plug>(simplemarkdown-next-heading)', 'next heading'],
+  ['prev-heading', '[[', '<Plug>(simplemarkdown-prev-heading)', 'previous heading'],
+  ['help', 'g?', '<Plug>(simplemarkdown-preview-help)', 'this list'],
+]
+
+
+# The key this action is bound to in the preview, after the user's overrides.
+# An empty string means the user turned that one off — which used to require
+# turning all of them off.
+def PreviewKey(action: string, fallback: string): string
+  var overrides = get(g:, 'simplemarkdown_preview_mappings', {})
+  if type(overrides) != v:t_dict || !has_key(overrides, action)
+    return fallback
+  endif
+  var wanted = overrides[action]
+  return type(wanted) == v:t_string ? wanted : fallback
+enddef
+
+
 def SetupBufferMappings()
-  nnoremap <buffer> <silent> q <Cmd>call simplemarkdown#Close()<CR>
-  nnoremap <buffer> <silent> r <Cmd>call simplemarkdown#Refresh()<CR>
-  nnoremap <buffer> <silent> <CR> <Cmd>call simplemarkdown#Activate()<CR>
-  nnoremap <buffer> <silent> gx <Cmd>call simplemarkdown#OpenLink()<CR>
-  nnoremap <buffer> <silent> gO <Cmd>call simplemarkdown#Toc()<CR>
-  nnoremap <buffer> <silent> x <Cmd>call simplemarkdown#ToggleTask()<CR>
-  nnoremap <buffer> <silent> ]] <Cmd>call simplemarkdown#NextHeading(1)<CR>
-  nnoremap <buffer> <silent> [[ <Cmd>call simplemarkdown#NextHeading(-1)<CR>
+  for [action, fallback, plug, _] in PREVIEW_MAPPINGS
+    var key = PreviewKey(action, fallback)
+    if key ==# ''
+      continue
+    endif
+    # nmap, not nnoremap: the right-hand side is a <Plug> that has to be
+    # followed.  <silent> is on the <Plug> definitions themselves.
+    execute printf('nmap <buffer> %s %s', key, plug)
+  endfor
+enddef
+
+
+export def PreviewHelp()
+  var rows: list<string> = []
+  for [action, fallback, _, description] in PREVIEW_MAPPINGS
+    var key = PreviewKey(action, fallback)
+    if key ==# ''
+      continue
+    endif
+    rows->add(printf('%-6s %s', key, description))
+  endfor
+  if empty(rows)
+    rows = ['every preview mapping is turned off']
+  endif
+  if !has('popupwin')
+    for row in rows
+      echom row
+    endfor
+    return
+  endif
+  popup_create(rows, {
+    title: ' SimpleMarkdown ',
+    padding: [0, 1, 0, 1],
+    border: [],
+    moved: 'any',
+    close: 'click',
+  })
 enddef
 
 

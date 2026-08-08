@@ -96,6 +96,13 @@ g:simplemarkdown_auto_close = Flag(get(g:, 'simplemarkdown_auto_close', 1), 1)
 g:simplemarkdown_auto_restart = Flag(get(g:, 'simplemarkdown_auto_restart', 1), 1)
 g:simplemarkdown_set_default_mapping = Flag(get(g:, 'simplemarkdown_set_default_mapping', 1), 1)
 g:simplemarkdown_default_mappings = Flag(get(g:, 'simplemarkdown_default_mappings', 1), 1)
+# Per-action overrides for the preview window's keys — `{'toggle-task': 'X'}`
+# to move one, `{'toggle-task': ''}` to turn that one off.  Turning a single
+# mapping off used to mean turning all of them off.
+var configured_preview_mappings = get(g:, 'simplemarkdown_preview_mappings', {})
+g:simplemarkdown_preview_mappings = type(configured_preview_mappings) == v:t_dict
+  ? filter(copy(configured_preview_mappings), (_, value) => type(value) == v:t_string)
+  : {}
 g:simplemarkdown_debug = Flag(get(g:, 'simplemarkdown_debug', 0), 0)
 
 const DEFAULT_FILETYPES = ['markdown', 'markdown.pandoc', 'pandoc', 'rmd', 'vimwiki', 'ghmarkdown']
@@ -151,6 +158,17 @@ nnoremap <silent> <Plug>(simplemarkdown-focus) <Cmd>SimpleMarkdownFocus<CR>
 nnoremap <silent> <Plug>(simplemarkdown-toc) <Cmd>SimpleMarkdownToc<CR>
 nnoremap <silent> <Plug>(simplemarkdown-toggle-task) <Cmd>SimpleMarkdownToggleTask<CR>
 nnoremap <silent> <Plug>(simplemarkdown-follow) <Cmd>SimpleMarkdownFollow<CR>
+nnoremap <silent> <Plug>(simplemarkdown-next-heading) <Cmd>call simplemarkdown#NextHeading(1)<CR>
+nnoremap <silent> <Plug>(simplemarkdown-prev-heading) <Cmd>call simplemarkdown#NextHeading(-1)<CR>
+
+# What the preview window binds by default.  They are <Plug>s so that a user
+# who wants `q` somewhere else, or wants the preview's `x` on a different key,
+# can say so without reaching into the plugin — see
+# g:simplemarkdown_preview_mappings.
+nnoremap <silent> <Plug>(simplemarkdown-preview-close) <Cmd>call simplemarkdown#Close()<CR>
+nnoremap <silent> <Plug>(simplemarkdown-preview-refresh) <Cmd>call simplemarkdown#Refresh()<CR>
+nnoremap <silent> <Plug>(simplemarkdown-preview-activate) <Cmd>call simplemarkdown#Activate()<CR>
+nnoremap <silent> <Plug>(simplemarkdown-preview-help) <Cmd>call simplemarkdown#PreviewHelp()<CR>
 nnoremap <silent> <Plug>(simplemarkdown-external) <Cmd>SimpleMarkdownExternal<CR>
 if g:simplemarkdown_set_default_mapping && maparg('<leader>md', 'n') ==# ''
   nmap <silent> <leader>md <Plug>(simplemarkdown-toggle)

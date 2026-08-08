@@ -40,6 +40,7 @@ g:simplemarkdown_omd_browser_delay	simplemarkdown.txt	/*g:simplemarkdown_omd_bro
 g:simplemarkdown_omd_host	simplemarkdown.txt	/*g:simplemarkdown_omd_host*
 g:simplemarkdown_omd_path	simplemarkdown.txt	/*g:simplemarkdown_omd_path*
 g:simplemarkdown_omd_port	simplemarkdown.txt	/*g:simplemarkdown_omd_port*
+g:simplemarkdown_preview_mappings	simplemarkdown.txt	/*g:simplemarkdown_preview_mappings*
 g:simplemarkdown_set_default_mapping	simplemarkdown.txt	/*g:simplemarkdown_set_default_mapping*
 g:simplemarkdown_show_urls	simplemarkdown.txt	/*g:simplemarkdown_show_urls*
 g:simplemarkdown_side	simplemarkdown.txt	/*g:simplemarkdown_side*

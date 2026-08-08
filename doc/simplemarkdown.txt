@@ -197,7 +197,13 @@ Plugs, for your own bindings: >
     <Plug>(simplemarkdown-toc)
     <Plug>(simplemarkdown-toggle-task)
     <Plug>(simplemarkdown-follow)
+    <Plug>(simplemarkdown-next-heading)
+    <Plug>(simplemarkdown-prev-heading)
     <Plug>(simplemarkdown-external)
+    <Plug>(simplemarkdown-preview-close)
+    <Plug>(simplemarkdown-preview-refresh)
+    <Plug>(simplemarkdown-preview-activate)
+    <Plug>(simplemarkdown-preview-help)
 <
 Inside the preview window, unless |g:simplemarkdown_default_mappings| is off: >
 
@@ -210,7 +216,12 @@ Inside the preview window, unless |g:simplemarkdown_default_mappings| is off: >
     x       check/uncheck the task on this row in the Markdown source
     ]]      next heading
     [[      previous heading
+    g?      show this list, with whatever keys are actually in force
 <
+Each of those is a buffer-local |:nmap| onto the corresponding <Plug>, so any
+one of them can be moved or dropped on its own — see
+|g:simplemarkdown_preview_mappings|.
+
 `<CR>` and `gx` resolve a link the same way: the one under the cursor, or —
 when the cursor is not on one — the row's leftmost link.
 
@@ -362,6 +373,22 @@ Default: ['markdown', 'markdown.pandoc', 'pandoc', 'rmd', 'vimwiki',
                                             *g:simplemarkdown_default_mappings*
 Install the buffer-local mappings listed under |simplemarkdown-mappings|.
 Default: 1
+
+                                            *g:simplemarkdown_preview_mappings*
+Per-key overrides for the preview window, keyed by action name: `close`,
+`refresh`, `activate`, `open-link`, `toc`, `toggle-task`, `next-heading`,
+`prev-heading`, `help`.  An empty string drops that one mapping and leaves the
+rest alone, which used to mean turning all of them off: >
+
+    " keep everything, but do not put `x` on task toggling
+    let g:simplemarkdown_preview_mappings = {'toggle-task': ''}
+
+    " and move `q` out of the way
+    let g:simplemarkdown_preview_mappings = {'close': '<Leader>q'}
+<
+`g?` in the preview lists the keys that are actually in force, so it follows
+whatever you set here.
+Default: {}
 
                                         *g:simplemarkdown_set_default_mapping*
 Install the global `<leader>md` mapping.

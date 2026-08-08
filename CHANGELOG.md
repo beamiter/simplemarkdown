@@ -53,6 +53,14 @@ All notable changes to this project are documented here.  The format follows
   which had called a patch of ten table rows bigger than a thousand blank ones.
   Requires a rebuilt daemon: `./install.sh`, then `:SimpleMarkdownRestart`.
 
+- **Every preview key is a `<Plug>`, and any one of them can be moved or
+  dropped.** `g:simplemarkdown_default_mappings` was all or nothing: disliking
+  `x` on tasks meant giving up `q`, `r`, `<CR>`, `gx`, `gO` and `]]` as well,
+  and none of them had a `<Plug>` to rebind. `g:simplemarkdown_preview_mappings`
+  now takes per-action overrides — `{'toggle-task': ''}` drops that one and
+  leaves the rest — and `g?` in the preview shows the keys actually in force,
+  built from the same table that installs them so it cannot drift.
+
 - **The outline, link table and block index are sent only when they change.**
   All three describe the whole document however little of it moved, so they
   travelled in full on every keystroke: on an 1,800-row document a one-word edit

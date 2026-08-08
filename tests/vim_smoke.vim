@@ -136,6 +136,48 @@ call assert_equal('nofile', getbufvar(s:pbuf, '&buftype'))
 
 " ----------------------------------------------------------- task toggling ---
 
+" ---------------------------------------------------------- preview keys ---
+
+" Every preview key is a <Plug> the user can rebind, and every one of them has
+" to resolve: a buffer map onto a <Plug> that was never defined is a key that
+" silently does nothing.
+call win_gotoid(s:PreviewWin())
+for [s:key, s:plug] in [
+      \ ['q', '<Plug>(simplemarkdown-preview-close)'],
+      \ ['r', '<Plug>(simplemarkdown-preview-refresh)'],
+      \ ['<CR>', '<Plug>(simplemarkdown-preview-activate)'],
+      \ ['gx', '<Plug>(simplemarkdown-follow)'],
+      \ ['gO', '<Plug>(simplemarkdown-toc)'],
+      \ ['x', '<Plug>(simplemarkdown-toggle-task)'],
+      \ [']]', '<Plug>(simplemarkdown-next-heading)'],
+      \ ['[[', '<Plug>(simplemarkdown-prev-heading)'],
+      \ ['g?', '<Plug>(simplemarkdown-preview-help)'],
+      \ ]
+  call assert_equal(s:plug, maparg(s:key, 'n'),
+        \ printf('the preview binds %s to %s', s:key, s:plug))
+  call assert_notequal('', maparg(s:plug, 'n'), s:plug .. ' is defined')
+endfor
+
+" One key can be moved or turned off without giving up the rest, which is what
+" the all-or-nothing g:simplemarkdown_default_mappings used to demand.
+let g:simplemarkdown_preview_mappings = {'toggle-task': '', 'close': 'Q'}
+SimpleMarkdownClose
+SimpleMarkdownOpen
+call win_gotoid(s:PreviewWin())
+call assert_equal('', maparg('x', 'n'), 'an emptied override unbinds just that key')
+call assert_equal('<Plug>(simplemarkdown-preview-close)', maparg('Q', 'n'),
+      \ 'and a moved one lands on the key asked for')
+call assert_notequal('', maparg('gO', 'n'), 'while the others are untouched')
+let g:simplemarkdown_preview_mappings = {}
+SimpleMarkdownClose
+SimpleMarkdownOpen
+call assert_true(s:Wait('index(s:PreviewLines(), "▌ Title") >= 0', 5000),
+      \ 'the preview comes back after the mapping checks')
+" The preview buffer is wiped when its window closes, so later sections that
+" look at properties must be given the new one.
+let s:pbuf = winbufnr(s:PreviewWin())
+call assert_false(getbufvar(s:pbuf, '&modifiable'), 'the reopened preview is not modifiable')
+
 " `x` in the preview edits the mapped Markdown checkbox, and the same command
 " works from the source side too.
 call win_gotoid(s:PreviewWin())

@@ -94,7 +94,10 @@ own documentation never replaces a working one.
 
 Inside the preview: `q` close, `r` re-render, `x` check/uncheck a task, `<CR>`
 follow a link or jump to the source line this row came from, `gx` open a link,
-`gO` contents, `]]`/`[[` next and previous heading. Task toggling edits the
+`gO` contents, `]]`/`[[` next and previous heading, `g?` the list of keys
+actually in force. Each is a `<Plug>` you can move or drop on its own with
+`g:simplemarkdown_preview_mappings` — `{'toggle-task': ''}` keeps everything
+but `x`. Task toggling edits the
 Markdown source buffer immediately and works on nested/quoted task lists too.
 A preview only edits through a map for the exact source revision it rendered;
 if the source changed in the meantime, `x` refuses the stale action and
