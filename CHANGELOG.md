@@ -114,6 +114,17 @@ All notable changes to this project are documented here.  The format follows
   under the cursor, which answers "where does this go" without `show_urls`
   spending a row on every URL (`g:simplemarkdown_link_hint`).
 
+### Fixed
+
+- **A render discarded for a stale width no longer leaves the preview behind.**
+  Resizing the window while a render was in flight threw the reply away and
+  stopped there, so the preview kept showing the older document until the next
+  edit — and worse, the daemon had already recorded those unseen rows as what
+  the client holds and computed the next patch against them. A discarded reply
+  now drops the session's claim to be synchronised and re-requests; a patch that
+  arrives for a session in that state is refused rather than spliced into the
+  wrong rows.
+
 ### Changed
 
 - `:SimpleMarkdownRefresh` and preview `r` now skip the debounce for every tab

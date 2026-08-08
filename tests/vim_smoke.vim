@@ -479,6 +479,25 @@ call s:BothWaysAgree('removing the line inserted at the top')
 call assert_true(simplemarkdown#DebugStatus().patched_renders > s:before_patches,
       \ 'renders were actually applied as patches, not silently as full ones')
 
+" ------------------------------------------------- a discarded render ---
+
+" A render laid out for a width the window no longer has is thrown away — but
+" the daemon believes the client took it and computes the next patch against
+" it, so the session has to admit it is no longer holding what the daemon
+" thinks and ask again.  Resizing right after the request is deterministic:
+" channel callbacks only run at a wait, so the reply cannot have landed yet.
+let s:discard_preview = s:PreviewWin()
+let s:discard_full = simplemarkdown#DebugStatus().full_renders
+let s:discard_width = winwidth(s:discard_preview)
+SimpleMarkdownRefresh
+call win_execute(s:discard_preview, 'vertical resize ' .. (s:discard_width - 1))
+call s:Wait('!simplemarkdown#DebugStatus().in_flight', 5000)
+sleep 100m
+call assert_true(simplemarkdown#DebugStatus().full_renders > s:discard_full,
+      \ 'a discarded render resynchronises instead of leaving a stale preview')
+call win_execute(s:discard_preview, 'vertical resize ' .. s:discard_width)
+call s:BothWaysAgree('a render discarded for a stale width')
+
 " ------------------------------------------------------- the current block ---
 
 " The source cursor inside the fenced block must wash that whole block in the

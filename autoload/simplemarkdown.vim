@@ -717,6 +717,28 @@ def Render(key: string)
 enddef
 
 
+# A reply this session cannot use — laid out for a window size it no longer
+# has, or answering a request it has already moved past.
+#
+# Throwing it away is not enough.  The daemon believes the client is holding
+# the rows that reply carried and computes the next patch against them, so a
+# session that quietly kept its older rows would splice that patch into the
+# wrong document.  Say the rows are gone and ask again: `rendered` false makes
+# the next request a full one, and Apply() refuses any patch that arrives in
+# the meantime.  Without the re-request the preview can sit on a stale document
+# indefinitely — the render that would have updated it is the one just thrown
+# away.
+def Discard(key: string)
+  if !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  session.pending = false
+  session.rendered = false
+  Schedule(key, 0)
+enddef
+
+
 def OnRenderReply(
     key: string,
     generation: number,
@@ -734,6 +756,7 @@ def OnRenderReply(
   if generation != get(session, 'render_generation', 0)
     Log(printf('discarding stale render generation %d for %s (current %d)',
       generation, key, get(session, 'render_generation', 0)))
+    Discard(key)
     return
   endif
   session.pending = false
@@ -765,6 +788,7 @@ def OnRenderReply(
   if get(reply, 'width', 0) != winwidth(session.winid)
     Log(printf('discarding a render for width %d, the window is %d',
       get(reply, 'width', 0), winwidth(session.winid)))
+    Discard(key)
     return
   endif
 
@@ -781,6 +805,16 @@ def Apply(key: string, reply: dict<any>): bool
   var session = sessions[key]
   var patch = get(reply, 'patch', {})
   var incremental = type(patch) == v:t_dict && !empty(patch)
+  # `rendered` false means this session is not holding the rows the daemon
+  # thinks it sent — a placeholder went up, or a reply was discarded — so a
+  # patch computed against those rows cannot be spliced into these.  Ask for a
+  # whole document rather than splicing into the wrong one, and leave the buffer
+  # alone in the meantime: what is on screen is stale, not wrong.
+  if incremental && !session.rendered
+    Log(printf('render %s: a patch arrived for a session that is not holding a render; resynchronising', key))
+    Schedule(key, 0)
+    return false
+  endif
   var applied = incremental ? ApplyPatch(session, patch) : ApplyFull(session, reply)
   if !applied
     if incremental

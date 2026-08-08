@@ -621,7 +621,10 @@ in the daemon, which drops the work before starting it.
 
 A render is discarded if the window has been resized since it was requested.
 Layout is width-specific; a reply for the old width would show a ragged right
-edge until the next keystroke.
+edge until the next keystroke.  Discarding it also drops the session's claim to
+be holding what the daemon last sent — the daemon computes the next patch
+against exactly that — and asks for a whole document, so a resize costs one
+extra round trip rather than a splice into the wrong rows.
 
 The preview-to-source row map is bound to the source buffer's |changedtick|
 and to the render generation that produced it. Editing through an older map
