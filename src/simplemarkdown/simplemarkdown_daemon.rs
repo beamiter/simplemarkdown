@@ -408,9 +408,22 @@ async fn serve() -> std::io::Result<()> {
             }
             Request::Outline { id, lines } => {
                 let tx = out_tx.clone();
+                let cancelled = cancelled.clone();
                 tokio::spawn(async move {
+                    // Withdrawable for the same reason a render is.  An outline
+                    // carries the whole document and costs a whole parse, and
+                    // the client asks for one on every edit it has folds for —
+                    // so the request that is already moot when it is picked up,
+                    // or moot by the time the parse finishes, is the common
+                    // case rather than the odd one.
+                    if cancelled.lock().await.remove(&id) {
+                        return;
+                    }
                     let walked =
                         tokio::task::spawn_blocking(move || outline::outline(&lines)).await;
+                    if cancelled.lock().await.remove(&id) {
+                        return;
+                    }
                     let event = match walked {
                         Ok(toc) => Event::OutlineResult { id, toc },
                         Err(error) => Event::Error {

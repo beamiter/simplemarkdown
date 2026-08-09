@@ -3125,9 +3125,16 @@ enddef
 #   b:simplemarkdown_outline       the entries the backend last sent
 #   b:simplemarkdown_outline_tick  the changedtick they describe
 #   b:simplemarkdown_outline_wait  the changedtick a request is out for
+#   b:simplemarkdown_outline_due   the changedtick a refresh is armed for
+#   b:simplemarkdown_outline_timer the timer that will send it
+#   b:simplemarkdown_outline_id    the background request in flight, to withdraw
 #   b:simplemarkdown_folds         one foldexpr answer per line, from the above
 
-def RequestOutline(buf: number, Done: func(list<any>)): bool
+# `background` is a refresh nobody asked for by name — the folding path.  It is
+# the one that may be withdrawn when a newer one supersedes it: a `:...Toc` is
+# waiting on its own reply and cancelling that would leave the popup that never
+# opens.
+def RequestOutline(buf: number, Done: func(list<any>), background: bool = false): bool
   if !IsMarkdownBuffer(buf) || !EnsureBackend() || ProtocolMismatch() != 0
     return false
   endif
@@ -3135,11 +3142,33 @@ def RequestOutline(buf: number, Done: func(list<any>)): bool
     return false
   endif
   var tick: number = getbufvar(buf, 'changedtick')
+  if background
+    var superseded: number = getbufvar(buf, 'simplemarkdown_outline_id', 0)
+    if superseded > 0
+      # The daemon is parsing a document this buffer has already moved past.
+      # Withdrawing it is what the render path does with a superseded render,
+      # and for the same reason: the whole document goes into every one of
+      # these, and a parse nobody will read still costs a core.
+      simplemarkdown#core#Cancel(superseded)
+      simplemarkdown#core#Send({type: 'cancel', id: superseded})
+      setbufvar(buf, 'simplemarkdown_outline_id', 0)
+    endif
+  endif
+  var id = NextId()
+  # Whichever kind it is, this tick now has a request out for it, so the
+  # foldexpr path does not arm a second one behind it.
+  setbufvar(buf, 'simplemarkdown_outline_wait', tick)
+  if background
+    setbufvar(buf, 'simplemarkdown_outline_id', id)
+  endif
   var sent = simplemarkdown#core#Request({
     type: 'outline',
-    id: NextId(),
+    id: id,
     lines: getbufline(buf, 1, '$'),
   }, (reply) => {
+    if getbufvar(buf, 'simplemarkdown_outline_id', 0) == id
+      setbufvar(buf, 'simplemarkdown_outline_id', 0)
+    endif
     if get(reply, '_failed', false) || get(reply, 'type', '') !=# 'outline_result'
       return
     endif
@@ -3147,6 +3176,10 @@ def RequestOutline(buf: number, Done: func(list<any>)): bool
     CacheOutline(buf, tick, entries)
     Done(entries)
   }, RENDER_TIMEOUT_MS)
+  if sent == 0
+    setbufvar(buf, 'simplemarkdown_outline_wait', -1)
+    setbufvar(buf, 'simplemarkdown_outline_id', 0)
+  endif
   return sent != 0
 enddef
 
@@ -3210,16 +3243,45 @@ enddef
 
 # Ask for a fresh outline if this buffer's has been overtaken by an edit, at
 # most once per changedtick.  Called from foldexpr, so it must do nothing at
-# all in the common case: two buffer-variable reads.
+# all in the common case: three buffer-variable reads.
+#
+# Debounced on |g:simplemarkdown_debounce|, the same option and for the same
+# reason a render is.  Once per changedtick still meant once per edit, and an
+# outline request carries the whole document and costs a whole parse — so
+# typing a word with folding on sent a full copy of the file per keystroke, and
+# ran as many parses concurrently as the typing outran the daemon.  What the
+# reader is waiting for is the fold structure after they stop, not one per
+# character on the way there.
 def EnsureOutline(buf: number)
   var tick: number = getbufvar(buf, 'changedtick')
   if getbufvar(buf, 'simplemarkdown_outline_tick', -1) == tick
       || getbufvar(buf, 'simplemarkdown_outline_wait', -1) == tick
+      || getbufvar(buf, 'simplemarkdown_outline_due', -1) == tick
     return
   endif
-  setbufvar(buf, 'simplemarkdown_outline_wait', tick)
-  RequestOutline(buf, (_) => {
-  })
+  # Set before anything can fail, and never cleared: this is what stops the
+  # foldexpr from asking again for a tick already dealt with, whether the
+  # request went out, was refused, or is still sitting behind the timer.
+  setbufvar(buf, 'simplemarkdown_outline_due', tick)
+  var armed: number = getbufvar(buf, 'simplemarkdown_outline_timer', 0)
+  if armed > 0
+    timer_stop(armed)
+    setbufvar(buf, 'simplemarkdown_outline_timer', 0)
+  endif
+  var wait = Setting('simplemarkdown_debounce')
+  if wait <= 0
+    RequestOutline(buf, (_) => {
+    }, true)
+    return
+  endif
+  setbufvar(buf, 'simplemarkdown_outline_timer', timer_start(wait, (_) => {
+    if !bufexists(buf)
+      return
+    endif
+    setbufvar(buf, 'simplemarkdown_outline_timer', 0)
+    RequestOutline(buf, (_) => {
+    }, true)
+  }))
 enddef
 
 

@@ -252,6 +252,19 @@ All notable changes to this project are documented here.  The format follows
 
 ### Fixed
 
+- **The background heading refresh is debounced, and a superseded one is
+  withdrawn.** With `g:simplemarkdown_folding` on, the outline behind the fold
+  levels was re-requested once per `changedtick` — which is once per edit, and
+  every one of those requests carries the whole document and buys a whole
+  `pulldown-cmark` parse. Typing a word into a folded file sent a full copy of
+  it per keystroke and left as many parses running as the typing outran the
+  daemon; the render path had been debouncing exactly the same cost since it was
+  written. The refresh now waits `g:simplemarkdown_debounce` after the last edit
+  like a render does, and the request an edit overtakes is cancelled, which the
+  daemon now honours for an outline as it already did for a render. Measured on
+  the wire, in `tests/vim_outline.vim`: twenty edits with a foldexpr sweep after
+  each used to be twenty requests, and are one.
+
 - **`:SimpleMarkdownResize {columns}` no longer leaves the plugin complaining
   about the plugin.** The argument went straight into `g:simplemarkdown_width`
   with only the floor applied, so `:SimpleMarkdownResize 500` stored 500 in an

@@ -74,6 +74,37 @@ test-daemon: build
 		*'"blocks"'*) echo "an unchanged block index was re-sent: $$out"; exit 1;; \
 	esac; \
 	echo "daemon: an unchanged index is not re-sent"
+	@# An outline the client has withdrawn must not be parsed or answered.  The
+	@# plugin debounces its background outline refreshes and withdraws the one
+	@# still in flight when a newer one supersedes it — the same treatment a
+	@# superseded render gets, because an outline costs the same full parse of
+	@# the same full document.  A daemon that ignored the withdrawal would go on
+	@# spending a core on a heading tree nobody will read.
+	@#
+	@# The cancel is sent first on purpose: this is not a race to win but an
+	@# assertion that the id is consulted at all, and out-of-order cancels are
+	@# exactly what the client produces (see note_cancelled).
+	@out="$$(printf '%s\n' \
+		'{"type":"cancel","id":7}' \
+		'{"type":"outline","id":7,"lines":["# heading","","body"]}' \
+		'{"type":"ping","id":8}' \
+		| ./target/release/simplemarkdown-daemon)"; \
+	case "$$out" in \
+		*'"outline_result"'*) echo "a withdrawn outline was answered anyway: $$out"; exit 1;; \
+	esac; \
+	printf '%s' "$$out" | grep -qF '"type":"pong"' \
+		|| { echo "the daemon stopped answering after a withdrawn outline: $$out"; exit 1; }; \
+	echo "daemon: a withdrawn outline is not parsed"
+	@# And one nobody withdrew still comes back, or the check above would pass
+	@# on a daemon that had simply stopped answering outlines altogether.
+	@out="$$(printf '%s\n' \
+		'{"type":"outline","id":9,"lines":["# heading","","body"]}' \
+		| ./target/release/simplemarkdown-daemon)"; \
+	case "$$out" in \
+		*'"outline_result"'*) ;; \
+		*) echo "an outline nobody withdrew went unanswered: $$out"; exit 1;; \
+	esac; \
+	echo "daemon: an outline that still stands is answered"
 
 # The protocol version is stated three times: in Rust, in Vim, and by the
 # running daemon's handshake.  The plugin refuses to talk to a daemon whose

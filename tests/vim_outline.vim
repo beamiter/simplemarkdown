@@ -171,10 +171,81 @@ call popup_close(s:popup, 3)
 call assert_equal(13, line('.'), 'choosing a heading jumps to it in the source')
 call assert_equal(s:src_win, win_getid(), 'in the window the command was run from')
 
+" ---------------------------------------------------- one request per pause ---
+
+" What folding costs.  EnsureOutline() answers foldexpr from a buffer variable,
+" but the refresh behind it sends the whole document and buys a whole parse, and
+" it used to send one per changedtick — one full copy of the file per keystroke
+" while typing, with as many parses in flight as the typing outran the daemon.
+" It is debounced like a render now.
+"
+" Asserted from the wire, because nothing on the Vim side can be asked this: the
+" plugin's counters say how many replies came back, not how many requests it
+" decided to send.
+let s:wire = tempname()
+call writefile([], s:wire)
+let $SIMPLEMARKDOWN_WIRE_LOG = s:wire
+let $SIMPLEMARKDOWN_REAL_DAEMON = g:simplemarkdown_daemon_path
+let s:shim = s:root .. '/tests/wire_shim.py'
+call assert_true(executable(s:shim),
+      \ 'the wire shim is executable: chmod +x tests/wire_shim.py')
+
+function! s:Outlines() abort
+  return len(filter(readfile($SIMPLEMARKDOWN_WIRE_LOG), 'v:val =~# ''"type":"outline"'''))
+endfunction
+
+" Stopped and waited out before the path is moved, not restarted over the top
+" of a running daemon: :SimpleMarkdownRestart hands the old job a SIGTERM and
+" starts the new one from a timer that does nothing while the old one is still
+" reaping, so it can leave the daemon this is replacing in place.
+call simplemarkdown#Stop()
+call assert_true(s:Wait('!simplemarkdown#core#IsRunning()', 5000),
+      \ 'the daemon this test is replacing has exited')
+let g:simplemarkdown_daemon_path = s:shim
+" Long enough that the edits below cannot straddle it, short enough that this
+" waits out one of them rather than a person's patience.
+let g:simplemarkdown_debounce = 300
+SimpleMarkdownRestart
+call assert_true(s:Wait('simplemarkdown#core#Ready()'
+      \ .. ' && simplemarkdown#core#Health().exe_path ==# s:shim', 5000),
+      \ 'the daemon comes back up behind the shim: '
+      \ .. simplemarkdown#core#Health().exe_path)
+call assert_true(s:Wait('!empty(filter(readfile(s:wire), ''v:val =~# "ping"''))', 5000),
+      \ 'and the shim copies what the plugin sends: ' .. string(readfile(s:wire)))
+
+call win_gotoid(s:src_win)
+let s:sent_before = s:Outlines()
+" Twenty edits, each followed by a foldexpr sweep of the whole buffer: what
+" typing a word into a folded document looks like.
+for s:i in range(20)
+  call append(line('$'), 'edit ' .. s:i)
+  for s:lnum in range(1, line('$'))
+    call simplemarkdown#FoldLevel(s:lnum)
+  endfor
+endfor
+call assert_equal(s:sent_before, s:Outlines(),
+      \ 'no outline goes out while the edits are still arriving, however many'
+      \ .. ' times foldexpr asks')
+call assert_true(s:Wait('s:Outlines() > ' .. s:sent_before, 5000),
+      \ 'and the pause after them sends one')
+call assert_equal(s:sent_before + 1, s:Outlines(),
+      \ 'exactly one, not one per edit: ' .. (s:Outlines() - s:sent_before)
+      \ .. ' requests for 20 edits')
+call assert_true(s:Wait('getbufvar(bufnr("%"), "simplemarkdown_outline_tick", -1)'
+      \ .. ' == getbufvar(bufnr("%"), "changedtick")', 5000),
+      \ 'and that one describes the document as it now stands')
+call assert_equal(['Top', 'One', 'Deep', 'Two'],
+      \ map(copy(b:simplemarkdown_outline), 'v:val.text'),
+      \ 'which still has its four headings: ' .. string(b:simplemarkdown_outline))
+
+let g:simplemarkdown_debounce = 0
+let g:simplemarkdown_daemon_path = $SIMPLEMARKDOWN_REAL_DAEMON
+
 " ----------------------------------------------------------------- teardown ---
 
 call simplemarkdown#Stop()
 call delete(s:doc)
+call delete(s:wire)
 
 if !empty(v:errors)
   for s:error in v:errors

@@ -486,7 +486,10 @@ Default: 0
 Default: 'right'
 
                                                     *g:simplemarkdown_debounce*
-Milliseconds to wait after the last change before re-rendering.
+Milliseconds to wait after the last change before re-rendering.  The background
+heading refresh behind |g:simplemarkdown_folding| waits the same amount, for the
+same reason: both send the whole document.  A value outside the range is clamped
+on every read, so a "never" written as 100000 is 5000 rather than never.
 Range: 0..5000
 Default: 120
 
@@ -634,9 +637,13 @@ H3s.  The levels come from the backend's parse rather than from a pattern over
 `^#`, which is what makes a `# comment` inside a fenced shell block stop being
 a heading — the thing every Markdown foldexpr in the wild gets wrong.
 
-The levels are cached per buffer and refreshed in the background after an edit;
-while a refresh is in flight the previous levels stand, so folds do not flap
-open on a keystroke.  When one lands it invalidates Vim's fold cache and
+The levels are cached per buffer and refreshed in the background after an edit,
+debounced on |g:simplemarkdown_debounce| the way a preview render is: the
+refresh carries the whole document and buys a whole parse, so a burst of typing
+sends one of them rather than one per keystroke, and a refresh a newer edit has
+overtaken is withdrawn rather than left to finish.  While a refresh is in flight
+the previous levels stand, so folds do not flap open on a keystroke.  When one
+lands it invalidates Vim's fold cache and
 nothing else: a fold you closed by hand stays closed, and no other window on
 the buffer has its folds opened around its cursor.  'foldlevel' is set to 99,
 i.e. everything open: `zM` closes them all, `zR` opens them again.
