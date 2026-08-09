@@ -271,8 +271,12 @@ All notable changes to this project are documented here.  The format follows
   option declared `0..400` — and `:SimpleMarkdownHealth`, whose whole job is to
   name real configuration mistakes, then reported that one for the rest of the
   session against a user who had never written it. The value is written through
-  the same table a `vimrc` value goes through, and a number that had to be
-  capped is said out loud rather than quietly applied.
+  the same table a `vimrc` value goes through, and a number that had to be moved
+  to fit — capped at the range's ceiling, or raised to
+  `g:simplemarkdown_min_width` — is said out loud rather than quietly applied.
+  The floor is this command's own rather than the table's, so raising one used
+  to be silent even after capping stopped being: `:SimpleMarkdownResize 5` gave
+  you a 30-column preview without a word.
 
 - **The help no longer promises that `:SimpleMarkdownFormatTable` leaves an
   empty `git diff -w`.** It does not, and never did: a table written without

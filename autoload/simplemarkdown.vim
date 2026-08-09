@@ -2050,10 +2050,19 @@ export def Resize(argument: string)
     # was stored as written and reported as a misconfiguration ever after.
     # Capping is worth a word too — a command that quietly does something other
     # than what it was asked is one whose silence stops meaning anything.
-    var complaint = PutSetting('simplemarkdown_width',
-      max([Setting('simplemarkdown_min_width'), wanted]))
+    var floor: number = Setting('simplemarkdown_min_width')
+    var stored = max([floor, wanted])
+    var complaint = PutSetting('simplemarkdown_width', stored)
     if complaint !=# ''
       Warn(complaint)
+    elseif stored != wanted
+      # The floor is this command's own, applied above rather than declared in
+      # the table, so `Coerce` is handed a number already inside its range and
+      # has nothing to say about it.  Raising one is as much "something other
+      # than what it was asked" as capping one, and the help promises both are
+      # said out loud, so this half is said here.
+      Warn(printf('g:simplemarkdown_width = %d is below g:simplemarkdown_min_width = %d — using %d',
+        wanted, floor, stored))
     endif
   endif
   if key ==# ''

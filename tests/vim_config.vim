@@ -153,11 +153,27 @@ call assert_equal([], s:Matching(simplemarkdown#ValidateConfig(), 'simplemarkdow
 call assert_true(s:Since(s:mark) =~# 'outside 0\.\.400',
       \ 'the command says it capped the number rather than capping it silently: '
       \ .. s:Since(s:mark))
+" The other end, which the help promises in the same sentence.  The floor is
+" this command's own — it is applied before the value reaches the table, so the
+" table's own complaint is empty and a number raised to it used to be raised in
+" silence: `:SimpleMarkdownResize 5` gave the user a 30-column preview and said
+" nothing about having done so.
+let s:floor = simplemarkdown#Setting('simplemarkdown_min_width')
+let s:mark = s:Mark()
+SimpleMarkdownResize 5
+call assert_equal(s:floor, g:simplemarkdown_width,
+      \ 'a width below the floor is stored raised to it, not as written')
+call assert_equal(s:floor, simplemarkdown#Setting('simplemarkdown_width'),
+      \ 'so `g:` and the value actually in force are the same number')
+call assert_true(s:Since(s:mark) =~# 'below g:simplemarkdown_min_width',
+      \ 'and the command says it raised the number rather than raising it'
+      \ .. ' silently: ' .. s:Since(s:mark))
+
 let s:mark = s:Mark()
 SimpleMarkdownResize 60
 call assert_equal(60, g:simplemarkdown_width,
       \ 'a width inside the range is stored exactly as asked')
-call assert_true(s:Since(s:mark) !~# 'outside',
+call assert_true(s:Since(s:mark) !~# 'outside' && s:Since(s:mark) !~# 'below',
       \ 'and says nothing about it: ' .. s:Since(s:mark))
 let g:simplemarkdown_width = 0
 
