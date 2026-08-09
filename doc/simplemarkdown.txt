@@ -269,6 +269,16 @@ second one.
                         the configured width — handy after the terminal itself
                         has been resized.
 
+                        With an argument, |g:simplemarkdown_width| is set to it,
+                        so the width outlives the window it was applied to.  It
+                        is stored through the same validation a value in your
+                        |vimrc| goes through: below |g:simplemarkdown_min_width|
+                        or above the range |g:simplemarkdown_width| declares,
+                        the number is clamped and the command says so.  No
+                        command of this plugin leaves an option holding
+                        something |:SimpleMarkdownHealth| would then report
+                        against you.
+
                                                          *:SimpleMarkdownStyle*
 :SimpleMarkdownStyle [unicode|ascii]
                         Switch decoration alphabets and re-render.  With no

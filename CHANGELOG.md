@@ -252,6 +252,15 @@ All notable changes to this project are documented here.  The format follows
 
 ### Fixed
 
+- **`:SimpleMarkdownResize {columns}` no longer leaves the plugin complaining
+  about the plugin.** The argument went straight into `g:simplemarkdown_width`
+  with only the floor applied, so `:SimpleMarkdownResize 500` stored 500 in an
+  option declared `0..400` — and `:SimpleMarkdownHealth`, whose whole job is to
+  name real configuration mistakes, then reported that one for the rest of the
+  session against a user who had never written it. The value is written through
+  the same table a `vimrc` value goes through, and a number that had to be
+  capped is said out loud rather than quietly applied.
+
 - **The help no longer promises that `:SimpleMarkdownFormatTable` leaves an
   empty `git diff -w`.** It does not, and never did: a table written without
   outer pipes gains them, a row short of a cell gains the `|` it was missing,

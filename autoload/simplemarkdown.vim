@@ -377,6 +377,26 @@ def Adopt(spec: dict<any>)
 enddef
 
 
+# The other direction: a `g:` option this plugin's own commands write, put
+# through the same table a user's value goes through, answering with what had
+# to be corrected ('' when nothing was).
+#
+# Not a convenience.  `:SimpleMarkdownResize 500` used to assign 500 to
+# g:simplemarkdown_width directly, and the validator — whose whole job is to
+# name real configuration mistakes — then reported that width in every
+# :SimpleMarkdownHealth for the rest of the session, naming one the user had
+# never made.  No command of this plugin may leave an option holding a value
+# this plugin complains about, so every command that writes one writes it here.
+def PutSetting(name: string, raw: any): string
+  if !has_key(SETTING_BY_NAME, name)
+    throw 'simplemarkdown: no such setting: ' .. name
+  endif
+  var [value, complaint] = Coerce(SETTING_BY_NAME[name], raw)
+  g:[name] = value
+  return complaint
+enddef
+
+
 # Called once from plugin/simplemarkdown.vim: every documented option ends up
 # present, of the documented type and inside its documented range, so that the
 # code and the tests that read `g:` plainly — and a user reading `:echo g:` —
@@ -2025,7 +2045,16 @@ export def Resize(argument: string)
   var key = CurrentSessionKey()
   var wanted = str2nr(trim(argument))
   if wanted > 0
-    g:simplemarkdown_width = max([Setting('simplemarkdown_min_width'), wanted])
+    # Through the table, not straight into `g:`: the floor was applied here
+    # already, but the ceiling the table declares was not, so a number above it
+    # was stored as written and reported as a misconfiguration ever after.
+    # Capping is worth a word too — a command that quietly does something other
+    # than what it was asked is one whose silence stops meaning anything.
+    var complaint = PutSetting('simplemarkdown_width',
+      max([Setting('simplemarkdown_min_width'), wanted]))
+    if complaint !=# ''
+      Warn(complaint)
+    endif
   endif
   if key ==# ''
     return
@@ -2057,7 +2086,10 @@ export def SetStyle(argument: string)
     echohl None
     return
   endif
-  g:simplemarkdown_style = wanted
+  # Already known to be one of the two, but written through the table anyway:
+  # "every command that writes an option writes it through PutSetting" is an
+  # invariant worth being able to state without exceptions.
+  PutSetting('simplemarkdown_style', wanted)
   for key in keys(sessions)
     Schedule(key, 0)
   endfor

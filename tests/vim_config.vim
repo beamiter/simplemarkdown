@@ -132,6 +132,35 @@ call assert_true(s:Wait('!empty(filter(getbufline(winbufnr(win_getid()), 1, "$")
       \ || s:Wait('1', 0), 'the preview drew something')
 SimpleMarkdownClose!
 
+" ------------------------------------- a value this plugin writes itself ---
+
+" `:SimpleMarkdownResize` is the one command whose argument becomes a `g:`
+" option.  It used to be assigned raw, so the plugin's own command could leave
+" the plugin's own validator reporting a misconfiguration the user never wrote —
+" in every :SimpleMarkdownHealth for the rest of the session, from a command
+" that had accepted the number without a word.
+call assert_equal([], s:Matching(simplemarkdown#ValidateConfig(), 'simplemarkdown_width\>'),
+      \ 'nothing is wrong with the width to begin with')
+let s:mark = s:Mark()
+SimpleMarkdownResize 500
+call assert_equal(400, g:simplemarkdown_width,
+      \ 'a width past the declared ceiling is stored clamped, not as written')
+call assert_equal(400, simplemarkdown#Setting('simplemarkdown_width'),
+      \ 'so `g:` and the value actually in force are the same number')
+call assert_equal([], s:Matching(simplemarkdown#ValidateConfig(), 'simplemarkdown_width\>'),
+      \ 'and nothing accuses the user of a width they did not set: '
+      \ .. string(simplemarkdown#ValidateConfig()))
+call assert_true(s:Since(s:mark) =~# 'outside 0\.\.400',
+      \ 'the command says it capped the number rather than capping it silently: '
+      \ .. s:Since(s:mark))
+let s:mark = s:Mark()
+SimpleMarkdownResize 60
+call assert_equal(60, g:simplemarkdown_width,
+      \ 'a width inside the range is stored exactly as asked')
+call assert_true(s:Since(s:mark) !~# 'outside',
+      \ 'and says nothing about it: ' .. s:Since(s:mark))
+let g:simplemarkdown_width = 0
+
 " ------------------------------------------ the table and the help agree ---
 
 " An option documented and not implemented is this suite's oldest recurring
