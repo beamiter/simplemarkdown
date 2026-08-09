@@ -261,9 +261,11 @@ All notable changes to this project are documented here.  The format follows
   daemon; the render path had been debouncing exactly the same cost since it was
   written. The refresh now waits `g:simplemarkdown_debounce` after the last edit
   like a render does, and the request an edit overtakes is cancelled, which the
-  daemon now honours for an outline as it already did for a render. Measured on
-  the wire, in `tests/vim_outline.vim`: twenty edits with a foldexpr sweep after
-  each used to be twenty requests, and are one.
+  daemon now honours for an outline as it already did for a render. Both halves
+  are measured on the wire, in `tests/vim_outline.vim`: twenty edits with a
+  foldexpr sweep after each used to be twenty requests and are one, and an edit
+  that arrives while a refresh is still outstanding puts a `cancel` for it on
+  the wire before the replacement.
 
 - **`:SimpleMarkdownResize {columns}` no longer leaves the plugin complaining
   about the plugin.** The argument went straight into `g:simplemarkdown_width`

@@ -238,14 +238,77 @@ call assert_equal(['Top', 'One', 'Deep', 'Two'],
       \ map(copy(b:simplemarkdown_outline), 'v:val.text'),
       \ 'which still has its four headings: ' .. string(b:simplemarkdown_outline))
 
+" ------------------------------------------- the refresh an edit overtook ---
+
+" The other half of the same fix, and the half the daemon's own assertions
+" cannot reach: that the *plugin* withdraws the refresh a newer edit has
+" overtaken.  A debounce alone still leaves one full parse of the whole document
+" running for a version of it nobody will ever see — the daemon honours a cancel
+" for an outline, but only if one is sent.
+"
+" A request stays outstanding here because the shim holds it: with a stall on,
+" an outline is logged and then kept from the daemon, which is what a daemon
+" still parsing looks like from Vim's side.  Without that this would be a race
+" against the parse of a forty-line document, which the test would lose.
+function! s:Sent(kind, id) abort
+  let l:type = '"type":"' .. a:kind .. '"'
+  " `\D` so that a request naming 110 does not answer for one naming 11.
+  let l:id = '"id":' .. a:id .. '\D'
+  return !empty(filter(readfile($SIMPLEMARKDOWN_WIRE_LOG),
+        \ 'v:val =~# l:type && v:val =~# l:id'))
+endfunction
+
+call simplemarkdown#Stop()
+call assert_true(s:Wait('!simplemarkdown#core#IsRunning()', 5000),
+      \ 'the shim of the section above has exited')
+let s:wire2 = tempname()
+call writefile([], s:wire2)
+let $SIMPLEMARKDOWN_WIRE_LOG = s:wire2
+" Long enough to outlast the debounce the second edit waits out, short enough
+" that a broken plugin fails this test rather than hanging it.
+let $SIMPLEMARKDOWN_WIRE_STALL = '"type":"outline"'
+let $SIMPLEMARKDOWN_WIRE_STALL_MS = 2000
+SimpleMarkdownRestart
+call assert_true(s:Wait('simplemarkdown#core#Ready()'
+      \ .. ' && simplemarkdown#core#Health().exe_path ==# s:shim', 5000),
+      \ 'the daemon comes back up behind the stalling shim: '
+      \ .. simplemarkdown#core#Health().exe_path)
+
+call win_gotoid(s:src_win)
+call append(line('$'), 'first edit')
+for s:lnum in range(1, line('$'))
+  call simplemarkdown#FoldLevel(s:lnum)
+endfor
+call assert_true(s:Wait('getbufvar(bufnr("%"), "simplemarkdown_outline_id", 0) > 0', 5000),
+      \ 'the refresh behind the folds goes out')
+let s:overtaken = getbufvar(bufnr('%'), 'simplemarkdown_outline_id', 0)
+call assert_true(s:Sent('outline', s:overtaken),
+      \ 'and it is on the wire, unanswered, while the shim holds it: '
+      \ .. string(readfile(s:wire2)))
+
+" A second edit while that one is still out there.  Its own refresh is what
+" supersedes the first, and the first has to be taken back.
+call append(line('$'), 'second edit')
+for s:lnum in range(1, line('$'))
+  call simplemarkdown#FoldLevel(s:lnum)
+endfor
+call assert_true(s:Wait('s:Sent("cancel", s:overtaken)', 8000),
+      \ 'the refresh the second edit overtook is withdrawn: '
+      \ .. string(readfile(s:wire2)))
+call assert_notequal(s:overtaken,
+      \ getbufvar(bufnr('%'), 'simplemarkdown_outline_id', 0),
+      \ 'and the buffer waits on the newer one instead')
+
 let g:simplemarkdown_debounce = 0
 let g:simplemarkdown_daemon_path = $SIMPLEMARKDOWN_REAL_DAEMON
+let $SIMPLEMARKDOWN_WIRE_STALL_MS = 0
 
 " ----------------------------------------------------------------- teardown ---
 
 call simplemarkdown#Stop()
 call delete(s:doc)
 call delete(s:wire)
+call delete(s:wire2)
 
 if !empty(v:errors)
   for s:error in v:errors
