@@ -148,8 +148,8 @@ call assert_equal(s:tick, b:changedtick, 'and the buffer is untouched')
 " the answer to a row short of a cell; for a row with one too many it is not,
 " because widening the table rewrites the header and the delimiter and makes
 " the hidden cell appear — a change to what the file says, from a command whose
-" whole promise is whitespace.  The surplus is not deleted either: it stays on
-" its row, where `:SimpleMarkdownLint` goes on calling it ragged.
+" whole promise is that it changes no cell.  The surplus is not deleted either:
+" it stays on its row, where `:SimpleMarkdownLint` goes on calling it ragged.
 call cursor(18, 1)
 SimpleMarkdownFormatTable
 call assert_true(s:Wait('getline(16) =~# "a   "', 5000),

@@ -137,10 +137,10 @@ All notable changes to this project are documented here.  The format follows
   delimiter row is rebuilt from the alignments it declares, a row short of a
   cell is padded rather than truncated, a row with one too many keeps it rather
   than the table gaining a column, and cell contents are moved but never
-  reflowed: the whole edit is whitespace, in one undo step, over the table's own
-  lines and nothing else. New capability `format`, new
-  `<Plug>(simplemarkdown-format-table)`; a backend that predates it says so
-  instead of failing obscurely.
+  reflowed: a command whose whole promise is that it changes no cell, in one
+  undo step, over the table's own lines and nothing else. New capability
+  `format`, new `<Plug>(simplemarkdown-format-table)`; a backend that predates
+  it says so instead of failing obscurely.
 
 - **An inserted line is a patch, not a whole document** (protocol v3). A row's
   source line used to be part of its identity, so pressing Enter — which moves

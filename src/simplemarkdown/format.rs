@@ -313,7 +313,7 @@ mod tests {
         // The delimiter row declares two columns, so GFM renders two and drops
         // the `3`.  Growing the table to three would rewrite the header and the
         // delimiter and make the `3` appear — a change to what the document
-        // says, from a command that promises whitespace.
+        // says, from a command whose whole promise is that it changes no cell.
         let out = formatted("| a | b |\n|---|---|\n| 1 | 2 | 3 |\n| 4 |\n", 1);
         assert_eq!(
             out,
@@ -349,6 +349,11 @@ mod tests {
     // below are why — each a documented behaviour of this formatter rather
     // than a bug, and each a change `-w` does not ignore.  The promise that
     // does hold is the second assertion: no cell's text changes.
+    //
+    // One behaviour per case, and nothing else moving in it, so that each is
+    // held here by itself: a formatter that stopped adding outer pipes, stopped
+    // padding a short row, or stopped re-running the delimiter's dashes turns
+    // exactly one of them red rather than none.
     #[test]
     fn a_run_moves_cells_without_changing_any_of_them() {
         // `git diff -w` ignores whitespace; this is what it would still see.
@@ -367,7 +372,9 @@ mod tests {
         }
         for (source, why) in [
             (
-                "a | b\n--|--\n1 | 2\n",
+                // The dash run is already three wide, so the pipes are the
+                // whole difference between this table and its formatted self.
+                "a | b\n--- | ---\n1 | 2\n",
                 "a table without outer pipes gains them",
             ),
             (
