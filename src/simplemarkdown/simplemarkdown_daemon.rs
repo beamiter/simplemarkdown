@@ -157,6 +157,39 @@ fn stalest_session(sessions: &HashMap<String, Session>) -> Option<String> {
 }
 
 type Sessions = Arc<Mutex<HashMap<String, Session>>>;
+type Cancelled = Arc<Mutex<HashSet<u64>>>;
+
+/// One outline request, from the spawn to the reply — or to neither, if the
+/// editor withdrew it on the way.
+///
+/// Withdrawable for the same reason a render is.  An outline carries the whole
+/// document and costs a whole `pulldown-cmark` parse, and the client asks for
+/// one on every edit it has folds for — so the request that is already moot
+/// when it is picked up, or moot by the time the parse finishes, is the common
+/// case rather than the odd one.  Hence the two checks: the first is the cancel
+/// that overtook the request in the queue, the second is the one that arrived
+/// while the parse was running, which is what an ordinary supersede looks like.
+///
+/// A function rather than the block it used to be so that the second check can
+/// be held by a test: a cancel timed to land mid-parse over a channel nobody
+/// has to read from a pipe.
+async fn walk_outline(id: u64, lines: Vec<String>, cancelled: Cancelled, tx: mpsc::Sender<String>) {
+    if cancelled.lock().await.remove(&id) {
+        return;
+    }
+    let walked = tokio::task::spawn_blocking(move || outline::outline(&lines)).await;
+    if cancelled.lock().await.remove(&id) {
+        return;
+    }
+    let event = match walked {
+        Ok(toc) => Event::OutlineResult { id, toc },
+        Err(error) => Event::Error {
+            id,
+            message: format!("outline failed: {error}"),
+        },
+    };
+    send(&tx, event).await;
+}
 
 /// The rows that changed, as one splice.
 ///
@@ -364,7 +397,7 @@ async fn serve() -> std::io::Result<()> {
     // Requests the editor has withdrawn.  Checked twice — when the render is
     // picked up and again when it finishes — because a document large enough
     // to be worth cancelling is also large enough to be cancelled mid-flight.
-    let cancelled: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
+    let cancelled: Cancelled = Arc::new(Mutex::new(HashSet::new()));
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
@@ -407,32 +440,7 @@ async fn serve() -> std::io::Result<()> {
                 sessions.lock().await.remove(&session);
             }
             Request::Outline { id, lines } => {
-                let tx = out_tx.clone();
-                let cancelled = cancelled.clone();
-                tokio::spawn(async move {
-                    // Withdrawable for the same reason a render is.  An outline
-                    // carries the whole document and costs a whole parse, and
-                    // the client asks for one on every edit it has folds for —
-                    // so the request that is already moot when it is picked up,
-                    // or moot by the time the parse finishes, is the common
-                    // case rather than the odd one.
-                    if cancelled.lock().await.remove(&id) {
-                        return;
-                    }
-                    let walked =
-                        tokio::task::spawn_blocking(move || outline::outline(&lines)).await;
-                    if cancelled.lock().await.remove(&id) {
-                        return;
-                    }
-                    let event = match walked {
-                        Ok(toc) => Event::OutlineResult { id, toc },
-                        Err(error) => Event::Error {
-                            id,
-                            message: format!("outline failed: {error}"),
-                        },
-                    };
-                    send(&tx, event).await;
-                });
+                tokio::spawn(walk_outline(id, lines, cancelled.clone(), out_tx.clone()));
             }
             Request::Lint { id, lines } => {
                 let tx = out_tx.clone();
@@ -1041,6 +1049,38 @@ mod tests {
         assert!(cancelled.contains(&10_000));
         assert!(cancelled.contains(&9_999));
         assert!(!cancelled.contains(&1));
+    }
+
+    // The two checks in `walk_outline` are not the same check twice.  The
+    // Makefile asserts the first one, by sending the cancel before the outline
+    // it names — the out-of-order case the client really does produce.  This is
+    // the other one, and the one an ordinary supersede produces: the withdrawal
+    // arrives while the parse is running, which nothing observable from a pipe
+    // can be timed against.
+    #[tokio::test]
+    async fn an_outline_withdrawn_while_it_parses_is_never_answered() {
+        let cancelled: Cancelled = Arc::new(Mutex::new(HashSet::new()));
+        let (tx, mut rx) = mpsc::channel::<String>(8);
+        // Big enough that the parse is still running when the cancel lands: a
+        // document this size takes hundreds of milliseconds to walk, against
+        // the 50ms below, and the margin only grows on a slower machine.
+        let lines: Vec<String> = (0..500_000).map(|n| format!("# heading {n}")).collect();
+        let walking = tokio::spawn(walk_outline(7, lines, cancelled.clone(), tx));
+
+        // By now the first check has certainly run — it is a lock acquired
+        // microseconds after the spawn — so this is the second one or nothing.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        note_cancelled(&mut *cancelled.lock().await, 7);
+
+        walking.await.expect("the outline task does not panic");
+        assert!(
+            rx.try_recv().is_err(),
+            "a withdrawn outline was answered anyway"
+        );
+        assert!(
+            !cancelled.lock().await.contains(&7),
+            "and the id it named is spent rather than remembered for ever"
+        );
     }
 
     #[test]
