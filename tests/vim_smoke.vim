@@ -37,6 +37,24 @@ function! s:Wait(expr, ms) abort
   return eval(a:expr)
 endfunction
 
+" No request outstanding.  A reply that arrives after the source has moved on is
+" discarded and re-issued at once (see Discard()), so a render still in flight
+" when a fixture is built repaints the preview on its own a moment later — and
+" an assertion about an *immediate* redraw cannot tell that apart from the
+" redraw it is looking for.  Every "long debounce" block below settles first.
+function! s:Settled(ms) abort
+  return s:Wait('simplemarkdown#DebugStatus().in_flight == 0', a:ms)
+endfunction
+
+" The largest value g:simplemarkdown_debounce declares, and therefore the
+" longest one simplemarkdown#Setting() will hand back: a bigger number is
+" clamped to this on every read, so writing 10000 here would mean 5000 and a
+" fixture calling itself "effectively infinite" would in fact expire inside a
+" 5000ms s:Wait().  Blocks that must see no debounced render park the option
+" here and assert with s:RACE_WAIT_MS, less than half of it.
+let s:LONG_DEBOUNCE_MS = 5000
+let s:RACE_WAIT_MS = 2000
+
 function! s:PreviewWin() abort
   for l:win in getwininfo()
     if getbufvar(l:win.bufnr, '&filetype') ==# 'simplemarkdown'
@@ -222,11 +240,16 @@ call assert_equal(s:tasks_before, getbufline(winbufnr(s:src_win), 7, 8),
 " Insert a task above alpha while its old preview is still on screen; blindly
 " following that map would toggle the newly inserted task on row 7.
 let s:race_preview = s:PreviewWin()
+call assert_true(s:Settled(5000),
+      \ 'no render is in flight when the edit-race fixture is built')
 let s:saved_debounce = g:simplemarkdown_debounce
-let g:simplemarkdown_debounce = 10000
+let g:simplemarkdown_debounce = s:LONG_DEBOUNCE_MS
 call win_gotoid(s:src_win)
 call append(6, '- [ ] inserted race')
 call simplemarkdown#OnTextChanged(bufnr('%'))
+call assert_false(s:PreviewHas(s:race_preview, 'inserted race'),
+      \ 'the preview still shows the pre-insert source, which is what makes the'
+      \ .. ' row mapping stale')
 call win_gotoid(s:race_preview)
 call search('☐ alpha')
 SimpleMarkdownToggleTask
@@ -235,7 +258,10 @@ call assert_equal(['- [ ] inserted race', '- [ ] alpha'],
       \ 'a stale preview map fails closed instead of editing the wrong task')
 call assert_true(execute('messages') =~# 'preview mapping is stale; refreshing',
       \ 'the stale action explains that it is refreshing')
-call assert_true(s:Wait('s:PreviewHas(s:race_preview, "☐ inserted race")', 5000),
+" Nothing else can repaint this preview inside the budget: nothing was in
+" flight, and the only render owed is the one parked behind s:LONG_DEBOUNCE_MS.
+call assert_true(s:Wait('s:PreviewHas(s:race_preview, "☐ inserted race")',
+      \ s:RACE_WAIT_MS),
       \ 'a stale task action immediately refreshes the preview')
 
 call win_gotoid(s:src_win)
@@ -284,8 +310,10 @@ call assert_true(s:Wait('!s:PreviewHas(s:first_preview, "broadcast to every tab"
 
 " `:SimpleMarkdownRefresh` has document scope: even when change events are
 " still sitting behind a long debounce, both tab sessions redraw now.
+call assert_true(s:Settled(5000),
+      \ 'no render is in flight when the manual-refresh fixture is built')
 let s:refresh_debounce = g:simplemarkdown_debounce
-let g:simplemarkdown_debounce = 10000
+let g:simplemarkdown_debounce = s:LONG_DEBOUNCE_MS
 call setline(3, 'A manual refresh reaches every tab.')
 call simplemarkdown#OnTextChanged(bufnr('%'))
 let s:refresh_origin = win_getid()
@@ -293,12 +321,15 @@ SimpleMarkdownRefresh
 call assert_equal(s:refresh_origin, win_getid(),
       \ 'document refresh does not switch tab or window')
 call assert_true(s:Wait('s:PreviewHas(s:first_preview, "manual refresh reaches every tab")'
-      \ .. ' && s:PreviewHas(s:second_preview, "manual refresh reaches every tab")', 5000),
+      \ .. ' && s:PreviewHas(s:second_preview, "manual refresh reaches every tab")',
+      \ s:RACE_WAIT_MS),
       \ 'manual refresh redraws every session for the current source')
 call setline(3, s:broadcast_original)
+call assert_true(s:Settled(5000), 'the manual refresh has been answered')
 SimpleMarkdownRefresh
 call assert_true(s:Wait('!s:PreviewHas(s:first_preview, "manual refresh reaches every tab")'
-      \ .. ' && !s:PreviewHas(s:second_preview, "manual refresh reaches every tab")', 5000),
+      \ .. ' && !s:PreviewHas(s:second_preview, "manual refresh reaches every tab")',
+      \ s:RACE_WAIT_MS),
       \ 'document-scoped refresh restores every shared preview')
 let g:simplemarkdown_debounce = s:refresh_debounce
 
@@ -312,8 +343,10 @@ call assert_true(s:Wait('s:PreviewHas(s:first_preview, "☐ alpha")'
 " A bang is deliberately broader: it refreshes unrelated documents too,
 " which is useful after changing a global renderer option from Vimscript.
 let s:shared_bufnr = bufnr('%')
+call assert_true(s:Settled(5000),
+      \ 'no render is in flight when the Refresh! fixture is built')
 let s:all_debounce = g:simplemarkdown_debounce
-let g:simplemarkdown_debounce = 10000
+let g:simplemarkdown_debounce = s:LONG_DEBOUNCE_MS
 new
 setlocal filetype=markdown
 call setline(1, '# Independent refresh target')
@@ -321,6 +354,7 @@ let s:independent_src_win = win_getid()
 call simplemarkdown#OnContextChanged()
 call assert_true(s:Wait('s:PreviewHas(s:second_preview, "Independent refresh target")', 5000),
       \ 'the second session follows an independent Markdown window')
+call assert_true(s:Settled(5000), 'the independent window has been rendered')
 call setbufline(s:shared_bufnr, 3, 'Global refresh first document.')
 call setline(1, '# Global refresh second document')
 call simplemarkdown#OnTextChanged(s:shared_bufnr)
@@ -330,7 +364,8 @@ SimpleMarkdownRefresh!
 call assert_equal(s:refresh_all_origin, win_getid(),
       \ 'Refresh! schedules sessions without visiting their tabs')
 call assert_true(s:Wait('s:PreviewHas(s:first_preview, "Global refresh first document")'
-      \ .. ' && s:PreviewHas(s:second_preview, "Global refresh second document")', 5000),
+      \ .. ' && s:PreviewHas(s:second_preview, "Global refresh second document")',
+      \ s:RACE_WAIT_MS),
       \ 'Refresh! redraws every open preview, even for unrelated sources')
 call setbufline(s:shared_bufnr, 3, s:broadcast_original)
 SimpleMarkdownRefresh!
