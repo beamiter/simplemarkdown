@@ -138,9 +138,17 @@ second one.
                         rebuilt from the alignments it declares, so `|:-|` and
                         `| :--- |` come out the same.  A row short of a cell is
                         padded rather than truncated: a formatter should not
-                        delete text.  Cell contents are moved, never reflowed,
-                        so the whole change is whitespace and `git diff -w` of
-                        it is empty.
+                        delete text.  Cell contents are moved, never reflowed
+                        and never deleted, so the table goes on saying what it
+                        said.
+
+                        That is not the same as a whitespace-only change, and
+                        `git diff -w` of a run is not reliably empty: a table
+                        written without outer pipes gains them, a row short of
+                        a cell gains the `|` it was missing, and the delimiter
+                        row's dashes are re-run to the new column widths.  What
+                        the command promises is that no cell's text changes,
+                        not that `-w` sees nothing.
 
                         How many columns the table has is the delimiter row's
                         to declare, and that is not changed either.  A row

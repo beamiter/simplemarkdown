@@ -18,9 +18,12 @@
 //! column alignments.  The parser answers all three; a regexp answers none of
 //! them without becoming a parser.
 //!
-//! What it deliberately does not do: reflow cell contents.  A cell is moved as
-//! written, so a formatter run is a whitespace-only change to the document and
-//! `git diff -w` on a formatted table is empty.
+//! What it deliberately does not do: reflow cell contents, or drop any.  A cell
+//! is moved as written, so the table goes on saying what it said.  That is not
+//! the same as a whitespace-only change and `git diff -w` of a run is not
+//! reliably empty — outer pipes are added to a table that had none, a short row
+//! gains the separator it was missing, and the delimiter row's dashes are re-run
+//! to the new widths.  See `a_run_moves_cells_without_changing_any_of_them`.
 
 use pulldown_cmark::{Alignment, Event, Options as MdOptions, Parser, Tag};
 use serde::Serialize;
@@ -112,9 +115,9 @@ fn format(rows: &[String], aligns: &[Alignment]) -> Vec<String> {
     // the most cells.  Widening the table to fit a row with one cell too many
     // would rewrite the header and the delimiter, and a cell GFM had been
     // dropping would start rendering: a semantic edit from a command whose
-    // whole promise is whitespace.  (`aligns` is empty only if a caller hands
-    // `format` rows it did not parse; then there is nothing to declare a shape
-    // and the widest row is the best guess left.)
+    // whole promise is that it changes no cell.  (`aligns` is empty only if a
+    // caller hands `format` rows it did not parse; then there is nothing to
+    // declare a shape and the widest row is the best guess left.)
     let columns = if aligns.is_empty() {
         cells.iter().map(Vec::len).max().unwrap_or(0)
     } else {
@@ -337,6 +340,58 @@ mod tests {
     fn a_table_without_outer_pipes_gains_them() {
         let out = formatted("a | b\n--|--\n1 | 2\n", 1);
         assert_eq!(out, vec!["| a   | b   |", "| --- | --- |", "| 1   | 2   |"]);
+    }
+
+    // What the command promises, in the two halves it actually has.
+    //
+    // The help and the README used to say a run was a whitespace-only change
+    // and that `git diff -w` of it was empty.  It is not, and the three cases
+    // below are why — each a documented behaviour of this formatter rather
+    // than a bug, and each a change `-w` does not ignore.  The promise that
+    // does hold is the second assertion: no cell's text changes.
+    #[test]
+    fn a_run_moves_cells_without_changing_any_of_them() {
+        // `git diff -w` ignores whitespace; this is what it would still see.
+        fn without_whitespace(rows: &[String]) -> String {
+            rows.concat().split_whitespace().collect()
+        }
+        // Every cell's text, in order, ignoring the delimiter row — whose dash
+        // run is laid out rather than written by the author.
+        fn cell_texts(rows: &[String]) -> Vec<String> {
+            rows.iter()
+                .enumerate()
+                .filter(|(index, _)| *index != 1)
+                .flat_map(|(_, row)| row.split('|').map(|cell| cell.trim().to_string()))
+                .filter(|cell| !cell.is_empty())
+                .collect()
+        }
+        for (source, why) in [
+            (
+                "a | b\n--|--\n1 | 2\n",
+                "a table without outer pipes gains them",
+            ),
+            (
+                "| a | b |\n|---|---|\n| 1 |\n",
+                "a row short of a cell gains the separator it was missing",
+            ),
+            (
+                "| a | b |\n|:-|--:|\n| 1 | 2 |\n",
+                "the delimiter row's dashes are re-run to the new widths",
+            ),
+        ] {
+            let before = lines(source);
+            let after = formatted(source, 1);
+            assert_ne!(
+                without_whitespace(&before),
+                without_whitespace(&after),
+                "{why}, so `git diff -w` of a run is not empty: {before:?} -> {after:?}"
+            );
+            assert_eq!(
+                cell_texts(&before),
+                cell_texts(&after),
+                "but no cell's text changed: {before:?} -> {after:?}"
+            );
+        }
     }
 
     #[test]

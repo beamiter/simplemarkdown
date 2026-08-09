@@ -252,6 +252,14 @@ All notable changes to this project are documented here.  The format follows
 
 ### Fixed
 
+- **The help no longer promises that `:SimpleMarkdownFormatTable` leaves an
+  empty `git diff -w`.** It does not, and never did: a table written without
+  outer pipes gains them, a row short of a cell gains the `|` it was missing,
+  and the delimiter row's dashes are re-run to the new column widths — all three
+  documented behaviours of the formatter, and none of them whitespace. What the
+  command actually promises is that no cell's text changes, which is what the
+  help, the README and `format.rs` now say.
+
 - **`:SimpleMarkdownFormatTable` no longer widens a table to fit a row with a
   cell too many.** How many columns a GFM table has is declared by its delimiter
   row, and every renderer drops whatever a row carries past that. The formatter
@@ -259,9 +267,9 @@ All notable changes to this project are documented here.  The format follows
   two-column table into a three-column one — header rewritten, delimiter
   rewritten, and a cell the document had been hiding suddenly rendering. That is
   an edit to what the file *says*, from the one command whose entire promise is
-  that `git diff -w` of its work is empty. The declared shape now wins; the
-  surplus cell is not deleted either (a formatter that drops text is one nobody
-  runs twice) but carried through unpadded on the end of its row, where
+  that it moves cells without changing any of them. The declared shape now wins;
+  the surplus cell is not deleted either (a formatter that drops text is one
+  nobody runs twice) but carried through unpadded on the end of its row, where
   `:SimpleMarkdownLint` goes on reporting it as the `ragged-table-row` it is.
   Before this, running the formatter on that diagnostic silenced it by changing
   the table.

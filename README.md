@@ -117,10 +117,14 @@ measured by the daemon, with the same `unicode-width` tables the preview is
 laid out with, so a table of CJK cells lines up in the file and not merely in
 the terminal that formatted it. The delimiter row is rebuilt from the
 alignments it declares, a short row is padded rather than truncated, and cell
-contents are moved but never reflowed, so the change is whitespace only. The
-number of columns is the delimiter row's to declare and is left alone too: a
-row carrying a cell past the last one keeps it on the end, unpadded, because
-widening the table would make a cell GFM was already dropping start rendering.
+contents are moved but never reflowed or deleted, so the table goes on saying
+what it said. That is not the same as a whitespace-only change and `git diff -w`
+of a run is not reliably empty — a table written without outer pipes gains them,
+a short row gains the `|` it was missing, and the delimiter row's dashes are
+re-run to the new widths. The number of columns is the delimiter row's to
+declare and is left alone too: a row carrying a cell past the last one keeps it
+on the end, unpadded, because widening the table would make a cell GFM was
+already dropping start rendering.
 Which lines are the table comes from the parser: a `|` inside a fenced code
 block is not a table row.
 
