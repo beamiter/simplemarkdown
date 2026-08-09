@@ -294,8 +294,13 @@ fn written_references(source: &str, code: &[Range<usize>]) -> Vec<(usize, String
 /// Counted over the source rather than over the events, because the parser has
 /// already normalised each row to the declared column count by the time it
 /// emits it: what it hands back is what GFM will show, not what the author
-/// wrote.  The cells are divided by the formatter's own `split_cells()`, so a
-/// row this calls ragged is exactly a row `:SimpleMarkdownFormatTable` pads.
+/// wrote.  The cells are divided by the formatter's own `split_cells()` and
+/// counted against the same `aligns.len()` the formatter lays a table out to,
+/// so the two agree on which rows are ragged.  What the formatter then does
+/// about it differs by direction, and so does what running it leaves here: a
+/// row short of a cell is padded out and stops being reported; a row with one
+/// too many keeps its surplus — widening the table would change what GFM
+/// renders — and goes on being reported until its author decides which it is.
 fn tables(
     source: &str,
     events: &[(Event, Range<usize>)],

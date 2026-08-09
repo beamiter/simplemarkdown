@@ -117,9 +117,12 @@ measured by the daemon, with the same `unicode-width` tables the preview is
 laid out with, so a table of CJK cells lines up in the file and not merely in
 the terminal that formatted it. The delimiter row is rebuilt from the
 alignments it declares, a short row is padded rather than truncated, and cell
-contents are moved but never reflowed, so the change is whitespace only. Which
-lines are the table comes from the parser: a `|` inside a fenced code block is
-not a table row.
+contents are moved but never reflowed, so the change is whitespace only. The
+number of columns is the delimiter row's to declare and is left alone too: a
+row carrying a cell past the last one keeps it on the end, unpadded, because
+widening the table would make a cell GFM was already dropping start rendering.
+Which lines are the table comes from the parser: a `|` inside a fenced code
+block is not a table row.
 
 `:SimpleMarkdownPromote` and `:SimpleMarkdownDemote` move heading levels, and
 `:SimpleMarkdownRenumber` renumbers ordered lists. The usual way to do the
@@ -151,7 +154,9 @@ should not open one. `]]`/`[[` move between headings in the source buffer too.
 Set `g:simplemarkdown_folding` to fold the source by heading, with the fold
 levels coming from the same parse. Every Markdown foldexpr in the wild is a
 pattern over `^#` and every one of them folds the comments in a fenced shell
-block; this one knows the difference.
+block; this one knows the difference. The levels are refreshed in the
+background after an edit, and a refresh landing leaves the folds you opened or
+closed by hand as you left them.
 
 Links resolve to GitHub's heading slugs, so `#notes-part-one` finds
 `## Notes: part one!` and `#notes-1` finds the second `## Notes`;

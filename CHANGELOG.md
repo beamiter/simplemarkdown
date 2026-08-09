@@ -106,7 +106,8 @@ All notable changes to this project are documented here.  The format follows
   which lines are the table comes from the parser, so a `|` inside a fenced code
   block is not a table row and a table inside a block quote keeps its `> `. The
   delimiter row is rebuilt from the alignments it declares, a row short of a
-  cell is padded rather than truncated, and cell contents are moved but never
+  cell is padded rather than truncated, a row with one too many keeps it rather
+  than the table gaining a column, and cell contents are moved but never
   reflowed: the whole edit is whitespace, in one undo step, over the table's own
   lines and nothing else. New capability `format`, new
   `<Plug>(simplemarkdown-format-table)`; a backend that predates it says so
@@ -221,6 +222,38 @@ All notable changes to this project are documented here.  The format follows
   spending a row on every URL (`g:simplemarkdown_link_hint`).
 
 ### Fixed
+
+- **`:SimpleMarkdownFormatTable` no longer widens a table to fit a row with a
+  cell too many.** How many columns a GFM table has is declared by its delimiter
+  row, and every renderer drops whatever a row carries past that. The formatter
+  laid the table out to the widest row instead, so one stray `|` turned a
+  two-column table into a three-column one — header rewritten, delimiter
+  rewritten, and a cell the document had been hiding suddenly rendering. That is
+  an edit to what the file *says*, from the one command whose entire promise is
+  that `git diff -w` of its work is empty. The declared shape now wins; the
+  surplus cell is not deleted either (a formatter that drops text is one nobody
+  runs twice) but carried through unpadded on the end of its row, where
+  `:SimpleMarkdownLint` goes on reporting it as the `ragged-table-row` it is.
+  Before this, running the formatter on that diagnostic silenced it by changing
+  the table.
+
+- **A background outline refresh no longer opens folds you closed.** With
+  `g:simplemarkdown_folding` on, the reply to an outline request has to make Vim
+  ask foldexpr again — the answers changed without the buffer changing, and
+  nothing else would. It did that with `zx`, which is *defined* as "undo
+  manually opened and closed folds", and which ends in a `zv` that also opens
+  folds around every other window's cursor on the buffer. So a section closed
+  with `zc` sprang open on the next keystroke, in every window, which is the
+  opposite of the "folds do not flap open" the help promised. Setting
+  `'foldexpr'` to the value it already has invalidates the same cache and leaves
+  manual fold state alone.
+
+- **An outline reply that arrives late no longer sticks the folds.** The backend
+  answers concurrently, so two outlines in flight can land in the other order.
+  The older one was taken, which stales the heading tree — and worse, wrote back
+  an older changedtick while the refresh bookkeeping was waiting on the newer
+  one, so nothing ever asked again and the folds stayed wrong until the next
+  edit. Replies older than what is cached are now dropped.
 
 - **The plugin and its supervisor no longer count request ids separately.** Both
   end up as keys in one pending table, and the plugin started at 1 — colliding

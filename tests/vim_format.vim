@@ -53,7 +53,9 @@ call assert_notequal('', maparg('<Plug>(simplemarkdown-format-table)', 'n'),
 
 let s:doc = tempname() .. '.md'
 " The CJK cell is four display columns and six bytes; the ragged row is one
-" cell short; the fenced block is bait for anything matching `|` by pattern.
+" cell short; the fenced block is bait for anything matching `|` by pattern;
+" the second table has a row with one cell too many, which is ragged the other
+" way and is the one kind of row padding is the wrong answer to.
 call writefile([
       \ '# Title',
       \ '',
@@ -69,6 +71,10 @@ call writefile([
       \ '| not | a table |',
       \ '|---|---|',
       \ '```',
+      \ '',
+      \ '| a | b |',
+      \ '|---|---|',
+      \ '| 1 | 2 | 3 |',
       \ ], s:doc)
 
 execute 'edit ' .. fnameescape(s:doc)
@@ -134,6 +140,33 @@ SimpleMarkdownFormatTable
 call assert_true(s:Wait('s:Since(s:mark) =~# "no table under the cursor"', 5000),
       \ 'a fenced code block is not a table: ' .. s:Since(s:mark))
 call assert_equal(s:tick, b:changedtick, 'and the buffer is untouched')
+
+" ------------------------------------------------- a row with a cell too many ---
+
+" GFM renders the columns the delimiter row declares and drops whatever a row
+" carries past them, so this document shows two columns and no `3`.  Padding is
+" the answer to a row short of a cell; for a row with one too many it is not,
+" because widening the table rewrites the header and the delimiter and makes
+" the hidden cell appear — a change to what the file says, from a command whose
+" whole promise is whitespace.  The surplus is not deleted either: it stays on
+" its row, where `:SimpleMarkdownLint` goes on calling it ragged.
+call cursor(18, 1)
+SimpleMarkdownFormatTable
+call assert_true(s:Wait('getline(16) =~# "a   "', 5000),
+      \ 'the second table is realigned: ' .. string(getline(16, 18)))
+call assert_equal([
+      \ '| a   | b   |',
+      \ '| --- | --- |',
+      \ '| 1   | 2   | 3 |',
+      \ ], getline(16, 18),
+      \ 'the declared shape is untouched and the surplus cell is kept')
+
+let s:tick = b:changedtick
+call cursor(16, 1)
+SimpleMarkdownFormatTable
+call assert_true(s:Wait('simplemarkdown#core#PendingCount() == 0', 5000),
+      \ 'the request is answered')
+call assert_equal(s:tick, b:changedtick, 'and running it again changes nothing')
 
 " ----------------------------------------------------------------- refusals ---
 

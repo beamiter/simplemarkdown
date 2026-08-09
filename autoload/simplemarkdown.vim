@@ -2734,15 +2734,32 @@ def CacheOutline(buf: number, tick: number, entries: list<any>)
   if !bufexists(buf)
     return
   endif
+  # The backend answers concurrently, so two outlines in flight can land in
+  # the other order.  Taking the older one back would not merely show a stale
+  # heading tree for a moment: it also writes back an older tick, and
+  # EnsureOutline is by then waiting on the newer one — so nothing would ever
+  # ask again and the folds would stay wrong until the next edit.
+  if tick < getbufvar(buf, 'simplemarkdown_outline_tick', -1)
+    return
+  endif
   setbufvar(buf, 'simplemarkdown_outline', entries)
   setbufvar(buf, 'simplemarkdown_outline_tick', tick)
   var count = get(getbufinfo(buf), 0, {linecount: 0}).linecount
   setbufvar(buf, 'simplemarkdown_folds', BuildFolds(entries, count))
   # Vim caches what foldexpr answered and only asks again when the buffer
   # changes.  This answer arrived without one, so nothing would ask.
+  #
+  # Setting 'foldexpr' to the value it already has is what invalidates that
+  # cache: Vim recomputes the folds from scratch and keeps the open/closed
+  # state of the ones that come back the same.  `zx` also recomputes them, but
+  # `zx` *means* "undo manually opened and closed folds" — with it here, every
+  # section a reader had closed sprang open one keystroke later, in this window
+  # and (through the `zv` it ends with) around every other cursor on the
+  # buffer.  A background refresh must not touch what the reader folded.
   for winid in win_findbuf(buf)
-    if getwinvar(winid, '&foldmethod') ==# 'expr'
-      win_execute(winid, 'normal! zx')
+    var expr: string = getwinvar(winid, '&foldexpr', '')
+    if getwinvar(winid, '&foldmethod') ==# 'expr' && expr !=# ''
+      win_execute(winid, 'setlocal foldexpr=' .. escape(expr, ' \|"'))
     endif
   endfor
 enddef

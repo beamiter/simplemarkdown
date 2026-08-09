@@ -142,6 +142,17 @@ second one.
                         so the whole change is whitespace and `git diff -w` of
                         it is empty.
 
+                        How many columns the table has is the delimiter row's
+                        to declare, and that is not changed either.  A row
+                        carrying a cell past the last declared column keeps it,
+                        unpadded, on the end of its row: GFM was already not
+                        rendering it, and widening the table to make it a
+                        column would make it appear — an edit to what the
+                        document says, which this command does not make.  The
+                        row is still a `ragged-table-row` to
+                        |:SimpleMarkdownLint| afterwards, because it still is
+                        one.
+
                         Column widths are display columns, measured by the
                         backend with the same tables the preview is laid out
                         with.  That is the point of asking it: a Vimscript
@@ -551,8 +562,10 @@ a heading — the thing every Markdown foldexpr in the wild gets wrong.
 
 The levels are cached per buffer and refreshed in the background after an edit;
 while a refresh is in flight the previous levels stand, so folds do not flap
-open on a keystroke.  'foldlevel' is set to 99, i.e. everything open: `zM`
-closes them all, `zR` opens them again.
+open on a keystroke.  When one lands it invalidates Vim's fold cache and
+nothing else: a fold you closed by hand stays closed, and no other window on
+the buffer has its folds opened around its cursor.  'foldlevel' is set to 99,
+i.e. everything open: `zM` closes them all, `zR` opens them again.
 Default: 0
 
                                               *g:simplemarkdown_lint_on_write*

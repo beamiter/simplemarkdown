@@ -80,6 +80,7 @@ call writefile([
 execute 'edit ' .. fnameescape(s:doc)
 setlocal filetype=markdown
 let s:src_buf = bufnr('%')
+let s:src_win = win_getid()
 
 " ---------------------------------------------------------------- a document ---
 
@@ -115,7 +116,15 @@ call assert_equal('SimpleMarkdown diagnostics', getloclist(0, {'title': 1}).titl
 
 " Fixing everything must also close the window: a list still showing the last
 " run is worse than none, because every problem in it has just been fixed.
-lclose
+"
+" `lopen` left this cursor in the location window, and the document has to be
+" edited in the window that holds it.  Going back to it is the only way out of
+" here that leaves the location window standing — closing it first would make
+" the assertion below true whatever the plugin did, which is what it did until
+" this line said `lclose`.
+call win_gotoid(s:src_win)
+call assert_equal(1, s:LocationWindows(),
+      \ 'the location window is still open going into the clean run')
 %delete _
 call setline(1, ['# Title', '', 'All well.', ''])
 SimpleMarkdownLint

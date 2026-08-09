@@ -110,6 +110,29 @@ call assert_true(foldtextresult(3) =~# 'Top', 'the fold text names the heading: 
 call assert_true(foldtextresult(3) =~# '17 lines', 'and says how much it hides')
 normal! zR
 
+" A fold the reader closed is the reader's.  The refresh below lands behind
+" them, with no keystroke of their own, and the obvious way to make Vim ask
+" foldexpr again — `zx` — is *defined* as "undo manually opened and closed
+" folds": with it here, every section closed by hand sprang open one keystroke
+" after it was closed, which is the opposite of what the help promises.
+call cursor(7, 1)
+normal! zc
+call assert_equal(7, foldclosed(8), 'a section closes when it is asked to')
+call assert_equal(16, foldclosedend(8), 'over the lines the outline gave it')
+
+" A heading appended below everything: the refresh has landed when the new
+" section has a level, which is a fact about the outline rather than about the
+" bookkeeping around it.  `-es` never redraws, so asking is also what makes
+" Vim put the question a redraw would.
+call append(19, ['', '## Three'])
+call assert_true(s:Wait('simplemarkdown#FoldLevel(21) ==# ">2"', 5000),
+      \ 'the refresh lands: ' .. string(map(range(17, 21), 'simplemarkdown#FoldLevel(v:val)')))
+call assert_equal(7, foldclosed(8),
+      \ 'and the fold closed before it is still closed after it')
+call assert_equal(16, foldclosedend(8), 'over the same lines')
+normal! zR
+undo
+
 " An edit moves the sections, and the cached levels have to follow.
 call append(0, ['inserted', ''])
 call assert_true(s:Wait('simplemarkdown#FoldLevel(5) ==# ">1"', 5000),

@@ -107,13 +107,25 @@ fn format(rows: &[String], aligns: &[Alignment]) -> Vec<String> {
     // from the parsed alignments rather than copied, so `|:-|` and `| :--- |`
     // come out identical.
     let delimiter = 1;
-    let columns = cells.iter().map(Vec::len).max().unwrap_or(0);
+    // How many columns the table *has* is declared by the delimiter row, which
+    // is what `aligns` was parsed from — not by whichever row happens to carry
+    // the most cells.  Widening the table to fit a row with one cell too many
+    // would rewrite the header and the delimiter, and a cell GFM had been
+    // dropping would start rendering: a semantic edit from a command whose
+    // whole promise is whitespace.  (`aligns` is empty only if a caller hands
+    // `format` rows it did not parse; then there is nothing to declare a shape
+    // and the widest row is the best guess left.)
+    let columns = if aligns.is_empty() {
+        cells.iter().map(Vec::len).max().unwrap_or(0)
+    } else {
+        aligns.len()
+    };
     let mut widths = vec![MIN_COLUMN; columns];
     for (index, row) in cells.iter().enumerate() {
         if index == delimiter {
             continue;
         }
-        for (column, cell) in row.iter().enumerate() {
+        for (column, cell) in row.iter().enumerate().take(columns) {
             widths[column] = widths[column].max(cell.width());
         }
     }
@@ -122,7 +134,7 @@ fn format(rows: &[String], aligns: &[Alignment]) -> Vec<String> {
         .iter()
         .enumerate()
         .map(|(index, row)| {
-            let rendered: Vec<String> = (0..columns)
+            let mut rendered: Vec<String> = (0..columns)
                 .map(|column| {
                     let width = widths[column];
                     if index == delimiter {
@@ -135,6 +147,15 @@ fn format(rows: &[String], aligns: &[Alignment]) -> Vec<String> {
                     )
                 })
                 .collect();
+            // Cells past the last declared column: GFM ignores them and this
+            // does not delete them, for the same reason a row short of a cell
+            // is padded rather than truncated — a formatter that drops text is
+            // one nobody runs twice.  They are carried through unpadded, so the
+            // columns that are declared still line up and the row still reads
+            // as the `ragged-table-row` the linter reports.
+            if index != delimiter && row.len() > columns {
+                rendered.extend_from_slice(&row[columns..]);
+            }
             format!("{prefix}| {} |", rendered.join(" | "))
         })
         .collect()
@@ -282,6 +303,34 @@ mod tests {
         // formatter deleting text; padding says what GFM already renders.
         let out = formatted("| a | b |\n|---|---|\n| 1 |\n", 3);
         assert_eq!(out[2], "| 1   |     |");
+    }
+
+    #[test]
+    fn a_row_with_a_cell_too_many_does_not_widen_the_table() {
+        // The delimiter row declares two columns, so GFM renders two and drops
+        // the `3`.  Growing the table to three would rewrite the header and the
+        // delimiter and make the `3` appear — a change to what the document
+        // says, from a command that promises whitespace.
+        let out = formatted("| a | b |\n|---|---|\n| 1 | 2 | 3 |\n| 4 |\n", 1);
+        assert_eq!(
+            out,
+            vec![
+                "| a   | b   |",
+                "| --- | --- |",
+                "| 1   | 2   | 3 |",
+                "| 4   |     |",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_surplus_cell_is_neither_deleted_nor_measured() {
+        // Wide enough to set the column width if it were counted as one.
+        let out = formatted("| a | b |\n|---|---|\n| 1 | 2 | a very long surplus |\n", 1);
+        assert_eq!(out[0], "| a   | b   |", "the header keeps its two columns");
+        assert_eq!(out[2], "| 1   | 2   | a very long surplus |");
+        let twice = table_at(&out, 1).expect("still a table").lines;
+        assert_eq!(out, twice, "and formatting it again changes nothing");
     }
 
     #[test]
