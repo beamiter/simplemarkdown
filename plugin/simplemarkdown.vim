@@ -21,123 +21,15 @@ if !has('textprop')
   finish
 endif
 
-def ClampNumber(value: any, fallback: number, minimum: number, maximum: number): number
-  if type(value) != v:t_number
-    return fallback
-  endif
-  return min([maximum, max([minimum, value])])
-enddef
-
-
-def Flag(value: any, fallback: number): number
-  if type(value) == v:t_bool
-    return value ? 1 : 0
-  endif
-  if type(value) == v:t_number
-    return value == 0 ? 0 : 1
-  endif
-  return fallback
-enddef
-
-
-def Choice(value: any, fallback: string, allowed: list<string>): string
-  if type(value) == v:t_string && index(allowed, value) >= 0
-    return value
-  endif
-  return fallback
-enddef
-
-
-def Strings(value: any, fallback: list<string>): list<string>
-  if type(value) != v:t_list
-    return fallback
-  endif
-  return filter(copy(value), (_, item) => type(item) == v:t_string)
-enddef
-
-
-# 0 means "half the window"; the preview is more useful side by side than
-# squeezed into a fixed column count that does not suit every terminal.
-g:simplemarkdown_width = ClampNumber(get(g:, 'simplemarkdown_width', 0), 0, 0, 400)
-g:simplemarkdown_min_width = ClampNumber(get(g:, 'simplemarkdown_min_width', 30), 30, 12, 400)
-# Caps the text column inside the preview, independent of the window: prose is
-# hard to read at 200 columns even when the window offers them.
-g:simplemarkdown_max_text_width = ClampNumber(get(g:, 'simplemarkdown_max_text_width', 0), 0, 0, 400)
-g:simplemarkdown_debounce = ClampNumber(get(g:, 'simplemarkdown_debounce', 120), 120, 0, 5000)
-g:simplemarkdown_tab_width = ClampNumber(get(g:, 'simplemarkdown_tab_width', 4), 4, 1, 16)
-g:simplemarkdown_side = Choice(get(g:, 'simplemarkdown_side', 'right'), 'right', ['left', 'right'])
-g:simplemarkdown_style = Choice(get(g:, 'simplemarkdown_style', 'unicode'), 'unicode', ['unicode', 'ascii'])
-
-g:simplemarkdown_syntax = Flag(get(g:, 'simplemarkdown_syntax', 1), 1)
-g:simplemarkdown_wrap = Flag(get(g:, 'simplemarkdown_wrap', 1), 1)
-g:simplemarkdown_code_wrap = Flag(get(g:, 'simplemarkdown_code_wrap', 1), 1)
-g:simplemarkdown_show_urls = Flag(get(g:, 'simplemarkdown_show_urls', 0), 0)
-# Number the lines inside fenced code blocks.  Off by default: the gutter comes
-# out of the code's own columns, and next to the source they are already there.
-g:simplemarkdown_code_numbers = Flag(get(g:, 'simplemarkdown_code_numbers', 0), 0)
-# Tint alternate table body rows.  Off by default because it depends on having
-# a CursorLine your colour scheme makes visible but not loud.
-g:simplemarkdown_table_zebra = Flag(get(g:, 'simplemarkdown_table_zebra', 0), 0)
-# Close a task list of two or more checkboxes with `2/5 done`.
-g:simplemarkdown_task_progress = Flag(get(g:, 'simplemarkdown_task_progress', 1), 1)
-# Echo the target of the link under the cursor while moving through the preview.
-g:simplemarkdown_link_hint = Flag(get(g:, 'simplemarkdown_link_hint', 1), 1)
-g:simplemarkdown_frontmatter = Flag(get(g:, 'simplemarkdown_frontmatter', 1), 1)
-# Answer a render with just the rows that moved.  On by default; turning it off
-# makes every render a whole document, which is only worth doing to rule the
-# patch path out while diagnosing something.
-g:simplemarkdown_incremental = Flag(get(g:, 'simplemarkdown_incremental', 1), 1)
-# Wash the whole block the source cursor is in, not just one preview row.
-g:simplemarkdown_focus_block = Flag(get(g:, 'simplemarkdown_focus_block', 1), 1)
-g:simplemarkdown_sync_scroll = Flag(get(g:, 'simplemarkdown_sync_scroll', 1), 1)
-g:simplemarkdown_sync_back = Flag(get(g:, 'simplemarkdown_sync_back', 0), 0)
-g:simplemarkdown_auto_open = Flag(get(g:, 'simplemarkdown_auto_open', 0), 0)
-g:simplemarkdown_auto_close = Flag(get(g:, 'simplemarkdown_auto_close', 1), 1)
-g:simplemarkdown_auto_restart = Flag(get(g:, 'simplemarkdown_auto_restart', 1), 1)
-g:simplemarkdown_set_default_mapping = Flag(get(g:, 'simplemarkdown_set_default_mapping', 1), 1)
-g:simplemarkdown_default_mappings = Flag(get(g:, 'simplemarkdown_default_mappings', 1), 1)
-# Per-action overrides for the preview window's keys — `{'toggle-task': 'X'}`
-# to move one, `{'toggle-task': ''}` to turn that one off.  Turning a single
-# mapping off used to mean turning all of them off.
-var configured_preview_mappings = get(g:, 'simplemarkdown_preview_mappings', {})
-g:simplemarkdown_preview_mappings = type(configured_preview_mappings) == v:t_dict
-  ? filter(copy(configured_preview_mappings), (_, value) => type(value) == v:t_string)
-  : {}
-# Fold Markdown source buffers by heading, using the backend's parse rather
-# than a pattern over `^#` — which is what makes a shell comment inside a
-# fenced block stop being a heading.  Off by default: a plugin that changes
-# 'foldmethod' behind your back is a plugin that gets blamed for it.
-g:simplemarkdown_folding = Flag(get(g:, 'simplemarkdown_folding', 0), 0)
-# Check the document into the location list on every write.  Off by default:
-# a save that opens a window is a save people stop making.  On, it fills the
-# list and says nothing — `:lopen` when you want to look.
-g:simplemarkdown_lint_on_write = Flag(get(g:, 'simplemarkdown_lint_on_write', 0), 0)
-g:simplemarkdown_debug = Flag(get(g:, 'simplemarkdown_debug', 0), 0)
-
-const DEFAULT_FILETYPES = ['markdown', 'markdown.pandoc', 'pandoc', 'rmd', 'vimwiki', 'ghmarkdown']
-# exists(), not get() with a [] fallback: an unset variable and a variable the
-# user set to [] are indistinguishable through get(), and defaulting the unset
-# case to [] leaves the plugin recognising no filetype at all.
-g:simplemarkdown_filetypes = exists('g:simplemarkdown_filetypes')
-  ? Strings(g:simplemarkdown_filetypes, DEFAULT_FILETYPES)
-  : DEFAULT_FILETYPES
-
-var configured_daemon_path = get(g:, 'simplemarkdown_daemon_path', '')
-g:simplemarkdown_daemon_path = type(configured_daemon_path) == v:t_string ? configured_daemon_path : ''
-
-# ─── the external (browser) preview, served by `omd` ───
-# Off the daemon's path entirely: omd is a separate binary the user installs,
-# and nothing here runs unless a :SimpleMarkdownExternal command is invoked.
-var configured_omd_path = get(g:, 'simplemarkdown_omd_path', '')
-g:simplemarkdown_omd_path = type(configured_omd_path) == v:t_string ? configured_omd_path : ''
-g:simplemarkdown_omd_host = Choice(get(g:, 'simplemarkdown_omd_host', '127.0.0.1'),
-  '127.0.0.1', ['127.0.0.1', 'localhost', '0.0.0.0', '::'])
-# The first port tried; a busy one moves the search up, it does not fail.
-g:simplemarkdown_omd_port = ClampNumber(get(g:, 'simplemarkdown_omd_port', 3030), 3030, 1024, 65500)
-g:simplemarkdown_omd_args = Strings(get(g:, 'simplemarkdown_omd_args', []), [])
-g:simplemarkdown_omd_browser = Flag(get(g:, 'simplemarkdown_omd_browser', 1), 1)
-g:simplemarkdown_omd_browser_delay = ClampNumber(
-  get(g:, 'simplemarkdown_omd_browser_delay', 250), 250, 0, 5000)
+# Every documented option, given its default where it is unset and brought back
+# inside its documented type and range where it is not — so that the code, the
+# tests and a user's `:echo g:simplemarkdown_style` all see the value actually
+# in force.  The table that says what each option may hold lives beside the
+# code that reads them, in autoload/simplemarkdown.vim, so there is one answer
+# rather than one here and a different one at render time; and what had to be
+# corrected is remembered rather than silently applied, because a `g:` rewritten
+# in place is a mistake with nothing left to find it by.
+simplemarkdown#NormalizeConfig()
 
 command! SimpleMarkdown simplemarkdown#Toggle()
 command! SimpleMarkdownOpen simplemarkdown#Open()
@@ -198,7 +90,8 @@ nnoremap <silent> <Plug>(simplemarkdown-preview-refresh) <Cmd>call simplemarkdow
 nnoremap <silent> <Plug>(simplemarkdown-preview-activate) <Cmd>call simplemarkdown#Activate()<CR>
 nnoremap <silent> <Plug>(simplemarkdown-preview-help) <Cmd>call simplemarkdown#PreviewHelp()<CR>
 nnoremap <silent> <Plug>(simplemarkdown-external) <Cmd>SimpleMarkdownExternal<CR>
-if g:simplemarkdown_set_default_mapping && maparg('<leader>md', 'n') ==# ''
+var default_mapping: number = simplemarkdown#Setting('simplemarkdown_set_default_mapping')
+if default_mapping && maparg('<leader>md', 'n') ==# ''
   nmap <silent> <leader>md <Plug>(simplemarkdown-toggle)
 endif
 

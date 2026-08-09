@@ -280,6 +280,13 @@ second one.
                         agree, and whether the installed binary is older than
                         the `src/` beside it.  Either says `./install.sh`.
 
+                        It also lists every `g:` option that does not hold what
+                        it says it holds, and every `g:simplemarkdown_`
+                        variable that is not an option at all — the report
+                        after a vimrc change, and the one place the corrections
+                        made at load can still be seen.  See
+                        |simplemarkdown-config-validation|.
+
                                                            *:SimpleMarkdownLog*
 :SimpleMarkdownLog      Open the backend log in a scratch buffer.  The log is a
                         ring buffer that is always recording, so the interesting
@@ -395,18 +402,65 @@ Following a link is not limited to the preview window — see
 ==============================================================================
 6. CONFIGURATION                                *simplemarkdown-configuration*
 
+                                             *simplemarkdown-config-validation*
+Every option below has a type, and each numeric one a range.  A value outside
+either is corrected rather than obeyed: a number is clamped into its range,
+anything else falls back to the documented default, and an entry of the wrong
+type is dropped from a list or a dictionary.  Refusing instead would be worse
+than it sounds — the render options are serialised into JSON that the daemon
+deserialises into typed fields, so a `'4'` where a 4 was meant is a rejected
+request and, from where you are sitting, a preview that stops updating.
+
+The check runs twice.  Once when the plugin loads, which is where a documented
+default comes from; and again on every read, which is what covers a `:let` from
+a later `:source`, a modeline or a |FileType| autocommand — none of which the
+load-time pass can see.
+
+Nothing is corrected quietly.  |:SimpleMarkdownHealth| lists every option that
+had to be changed, including the ones changed at load, where `g:` now holds the
+corrected value and the mistake would otherwise have left nothing to find it
+by; and the first use of the backend in a session says the same list once — not
+at load, where a message is scrolled away by whatever loads next, and not on
+every render either.  A `g:simplemarkdown_` variable that is not an option at
+all is reported too, named alongside the option it is closest to when one is
+close enough to be a slip: a misspelt option name is otherwise perfectly
+silent, because nothing ever reads it.
+
+Three functions expose that to a vimrc that wants to ask.
+
+                                                     *simplemarkdown#Setting()*
+simplemarkdown#Setting({name})
+        The validated value of one option — exactly what the plugin itself
+        would use for it, whatever `g:` currently holds.  Throws for a {name}
+        that is not an option.
+
+                                              *simplemarkdown#ValidateConfig()*
+simplemarkdown#ValidateConfig()
+        Everything wrong with the configuration right now, as a list of
+        `[WARN]` and `[INFO]` lines — the same ones |:SimpleMarkdownHealth|
+        shows.  Empty when there is nothing to say.
+
+                                                *simplemarkdown#SettingNames()*
+simplemarkdown#SettingNames()
+        Every option name.  The same set this section documents: the test
+        suite holds the two against each other, so an option implemented and
+        not documented, or documented and not implemented, fails the build.
+
                                                        *g:simplemarkdown_width*
 Preview window width in columns.  0 means half the Vim window.
+Range: 0..400
 Default: 0
 
                                                    *g:simplemarkdown_min_width*
 Floor for the computed width.
+Range: 12..400
 Default: 30
 
                                               *g:simplemarkdown_max_text_width*
 Cap on the text column inside the preview, independent of the window width.
 Prose is hard to read at 200 columns even when the window offers them; set
 this to 80 or 100 and the window can stay as wide as you like.  0 disables it.
+Range: 0..400
 Default: 0
 
                                                         *g:simplemarkdown_side*
@@ -415,6 +469,7 @@ Default: 'right'
 
                                                     *g:simplemarkdown_debounce*
 Milliseconds to wait after the last change before re-rendering.
+Range: 0..5000
 Default: 120
 
                                                        *g:simplemarkdown_style*
@@ -493,6 +548,7 @@ Default: 1
 
                                                    *g:simplemarkdown_tab_width*
 Columns a tab expands to inside code blocks.
+Range: 1..16
 Default: 4
 
                                                  *g:simplemarkdown_sync_scroll*
@@ -597,6 +653,7 @@ Default: '127.0.0.1'
                                                     *g:simplemarkdown_omd_port*
 The first port tried.  A port already in use moves the search up rather than
 failing, so several buffers can be previewed at once.
+Range: 1024..65500
 Default: 3030
 
                                                     *g:simplemarkdown_omd_args*
@@ -611,6 +668,7 @@ Default: 1
                                            *g:simplemarkdown_omd_browser_delay*
 Milliseconds to wait before opening the browser, so it does not race the server
 to the port and land on a "connection refused" page.
+Range: 0..5000
 Default: 250
 
 ==============================================================================
@@ -865,6 +923,14 @@ Tables and code frames are misaligned
 Nothing happens on :SimpleMarkdown
     The buffer's filetype is not in |g:simplemarkdown_filetypes| and its name
     does not look like Markdown.  Check with `:set filetype?`.
+
+A setting seems to be ignored
+    Run |:SimpleMarkdownHealth|.  A value of the wrong type, or a number
+    outside its range, is corrected rather than obeyed, and the health report
+    is where that is said; `:echo g:simplemarkdown_...` is not, because the
+    variable was rewritten with the corrected value.  A misspelt option name
+    is listed there too — nothing else can notice one, since nothing reads it.
+    See |simplemarkdown-config-validation|.
 
 A code block is not highlighted
     syntect does not bundle a definition for every language; `toml` and `vim`

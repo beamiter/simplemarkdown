@@ -240,6 +240,22 @@ Everything has a working default; these are the ones worth knowing about.
 
 `:help simplemarkdown` documents the rest, including every highlight group.
 
+**An option that does not hold what it says it holds is corrected, and said out
+loud.** Numbers are clamped into their range, anything else falls back to the
+documented default, and an entry of the wrong type is dropped from a list —
+when the plugin loads, and again on every read, so a `:let` from a later
+`:source`, a modeline or a `FileType` autocommand is covered too. Refusing
+instead would mean a preview that quietly stops updating: the render options
+are serialised into JSON the daemon deserialises into typed fields.
+
+`:SimpleMarkdownHealth` lists whatever had to be corrected, and the first
+render of a session says the same list once. That includes the corrections
+made at load, which `:echo g:simplemarkdown_style` can no longer show you,
+because the variable was rewritten with the corrected value. A
+`g:simplemarkdown_` variable that is not an option at all is reported too, named
+alongside the option it is closest to when one is close enough to be a slip — a
+misspelt option name is otherwise perfectly silent, because nothing reads it.
+
 **If tables and code frames look misaligned**, your terminal is treating East
 Asian Ambiguous width characters as double width — box-drawing lives in that
 category. Set `g:simplemarkdown_style = 'ascii'`, or configure the terminal to

@@ -37,6 +37,35 @@ All notable changes to this project are documented here.  The format follows
 
 ### Added
 
+- **A `g:` option that does not hold what it says it holds is corrected, and
+  said out loud.** Every option now lives in one table — its type, its range,
+  its default — instead of a normalising expression in `plugin/` and a
+  `get(g:, ..., fallback)` at every point of use, which is two answers to the
+  same question and no answer at all for a value set after load. There were two
+  holes. A `:let` from a later `:source`, a modeline or a `FileType`
+  autocommand was never normalised at all, and the render options go straight
+  into JSON the daemon deserialises into typed fields: a `'4'` where a 4 was
+  meant was a rejected request and, from where the user sits, a preview that
+  stops updating with the reason in a log nobody opens. And a value corrected
+  at load was corrected *in place* — `g:simplemarkdown_style` reads back
+  `'unicode'` whatever you wrote there, so a setting that does not work looked
+  exactly like a setting that does. Now every read goes through
+  `simplemarkdown#Setting()`, so a wrong value costs a fallback rather than the
+  preview; `:SimpleMarkdownHealth` lists everything that had to be corrected,
+  the load-time corrections included; and the first use of the backend in a
+  session says the same list once — not at load, where a message is scrolled
+  away by whatever loads next, and not on every render, which is the other way
+  to make a warning invisible. A `g:simplemarkdown_` variable that is not an
+  option at all is reported, named alongside the option it is closest to when
+  one is close enough to be a slip: `g:simplemarkdown_stlye` is otherwise
+  perfectly silent, because nothing reads it. New `simplemarkdown#Setting()`,
+  `simplemarkdown#ValidateConfig()` and
+  `simplemarkdown#SettingNames()`; new `make test-config`, which also holds the
+  table against the `*g:simplemarkdown_*` tags in the help — an option
+  documented and not implemented is this suite's oldest recurring defect — and
+  `make check-settings`, which catches a *caller* asking for a name the table
+  does not declare, since that name is a string no `:defcompile` can check.
+
 - **`:SimpleMarkdownPromote`, `:SimpleMarkdownDemote` and
   `:SimpleMarkdownRenumber` restructure the source.** Shifting heading levels is
   the most common structural edit there is, and the received way to do it is

@@ -134,6 +134,369 @@ var patched_renders = 0
 var full_renders = 0
 var last_patch_rows = -1
 
+# ─────────────────────────── configuration ───────────────────────────
+#
+# Every `g:` option this plugin documents, what it may hold, and what it falls
+# back to.  One table rather than a normalising expression per option, for
+# three reasons.
+#
+# A value is checked twice.  NormalizeConfig() runs once from
+# plugin/simplemarkdown.vim — that is where a documented default comes from —
+# but a `:let` from a later `:source`, a modeline or a FileType autocommand is
+# never seen by it, and the render options go straight into JSON: a quoted
+# `'4'` where the daemon expects a number is rejected by serde, and what the
+# user gets is a preview that stops updating with `invalid request` in a log
+# nobody opens.  Every read below goes through Setting(), so a wrong value
+# costs a fallback and a line in the health report, never the preview.
+#
+# A value silently corrected is a setting that does not work with nothing said
+# about it.  Coerce() returns what was wrong as well as what it chose, so
+# :SimpleMarkdownHealth can list it and the first use of the backend can say it
+# once — the load-time correction especially, since by then `g:` holds the
+# corrected value and the mistake has vanished from the only place anyone would
+# think to look.
+#
+# And a name in one list only is a bug in one direction or the other: an option
+# implemented and not documented is one nobody can find, an option documented
+# and not implemented is a promise nothing keeps.  SettingNames() is what
+# tests/vim_config.vim holds against the help.
+#
+# `kind` is one of:
+#   flag      0/1, also accepting v:true/v:false
+#   number    clamped into min..max — a width of 4000 is a typo, not a request
+#   choice    one of `allowed`
+#   strings   list of strings; an entry that is not a string is dropped
+#   mappings  dict of string -> string; an entry that is not is dropped
+#   string    anything textual (a path: the filesystem is the authority here,
+#             not this table)
+const SETTINGS: list<dict<any>> = [
+  # 0 is "half the window": the preview is more useful side by side than
+  # squeezed into a fixed column count that suits no terminal in particular.
+  {name: 'simplemarkdown_width', kind: 'number', default: 0, min: 0, max: 400},
+  {name: 'simplemarkdown_min_width', kind: 'number', default: 30, min: 12, max: 400},
+  # Caps the text column inside the preview, independent of the window: prose is
+  # hard to read at 200 columns even when the window offers them.
+  {name: 'simplemarkdown_max_text_width', kind: 'number', default: 0, min: 0, max: 400},
+  {name: 'simplemarkdown_side', kind: 'choice', default: 'right', allowed: ['left', 'right']},
+  {name: 'simplemarkdown_debounce', kind: 'number', default: 120, min: 0, max: 5000},
+  {name: 'simplemarkdown_style', kind: 'choice', default: 'unicode',
+    allowed: ['unicode', 'ascii']},
+  {name: 'simplemarkdown_syntax', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_wrap', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_code_wrap', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_show_urls', kind: 'flag', default: 0},
+  {name: 'simplemarkdown_link_hint', kind: 'flag', default: 1},
+  # Numbering the lines in a fenced block costs columns out of the code's own
+  # width, and beside the source they are already on screen.
+  {name: 'simplemarkdown_code_numbers', kind: 'flag', default: 0},
+  # Tinting alternate table rows needs a CursorLine your colour scheme makes
+  # visible but not loud, which is not a safe assumption.
+  {name: 'simplemarkdown_table_zebra', kind: 'flag', default: 0},
+  {name: 'simplemarkdown_task_progress', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_frontmatter', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_tab_width', kind: 'number', default: 4, min: 1, max: 16},
+  # Off makes every render a whole document, which is only worth doing to rule
+  # the patch path out while diagnosing something.
+  {name: 'simplemarkdown_incremental', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_focus_block', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_sync_scroll', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_sync_back', kind: 'flag', default: 0},
+  {name: 'simplemarkdown_auto_open', kind: 'flag', default: 0},
+  {name: 'simplemarkdown_auto_close', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_auto_restart', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_set_default_mapping', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_default_mappings', kind: 'flag', default: 1},
+  # Per-action overrides for the preview window's keys — `{'toggle-task': 'X'}`
+  # to move one, `{'toggle-task': ''}` to turn that one off.
+  {name: 'simplemarkdown_preview_mappings', kind: 'mappings', default: {}},
+  # A plugin that changes 'foldmethod' behind your back is a plugin that gets
+  # blamed for it, so folding is asked for rather than assumed.
+  {name: 'simplemarkdown_folding', kind: 'flag', default: 0},
+  # A save that opens a window is a save people stop making: on, the linter
+  # fills the location list and says nothing.
+  {name: 'simplemarkdown_lint_on_write', kind: 'flag', default: 0},
+  {name: 'simplemarkdown_debug', kind: 'flag', default: 0},
+  {name: 'simplemarkdown_filetypes', kind: 'strings',
+    default: ['markdown', 'markdown.pandoc', 'pandoc', 'rmd', 'vimwiki', 'ghmarkdown']},
+  {name: 'simplemarkdown_daemon_path', kind: 'string', default: ''},
+  # ─── the external (browser) preview, served by `omd` ───
+  {name: 'simplemarkdown_omd_path', kind: 'string', default: ''},
+  {name: 'simplemarkdown_omd_host', kind: 'choice', default: '127.0.0.1',
+    allowed: ['127.0.0.1', 'localhost', '0.0.0.0', '::']},
+  # The first port tried; a busy one moves the search up, it does not fail.
+  {name: 'simplemarkdown_omd_port', kind: 'number', default: 3030, min: 1024, max: 65500},
+  {name: 'simplemarkdown_omd_args', kind: 'strings', default: []},
+  {name: 'simplemarkdown_omd_browser', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_omd_browser_delay', kind: 'number', default: 250, min: 0, max: 5000},
+]
+
+final SETTING_BY_NAME: dict<dict<any>> = {}
+for spec in SETTINGS
+  SETTING_BY_NAME[spec.name] = spec
+endfor
+
+# What writing a validated value back into `g:` had to correct: option name ->
+# {said, value}.  Kept because the correction happens in place — by the time
+# anyone looks, `g:` holds the corrected value and the mistake is gone from the
+# one place a user would think to check.  `value` is what was written, and the
+# complaint stands only while `g:` still holds it: someone who fixes the option
+# during the session has fixed it, and a report that keeps saying otherwise is
+# one people stop reading.
+var corrections: dict<dict<any>> = {}
+var config_warned = false
+
+
+# The value to use, and what was wrong with the one that was there — an empty
+# complaint means nothing was.
+def Coerce(spec: dict<any>, raw: any): list<any>
+  var name: string = spec.name
+  var shown = string(raw)
+  if spec.kind ==# 'flag'
+    if type(raw) == v:t_bool
+      return [raw ? 1 : 0, '']
+    endif
+    if type(raw) == v:t_number
+      return [raw == 0 ? 0 : 1, '']
+    endif
+    return [spec.default,
+      printf('g:%s = %s is not 0 or 1 — using %d', name, shown, spec.default)]
+  elseif spec.kind ==# 'number'
+    if type(raw) != v:t_number
+      return [spec.default,
+        printf('g:%s = %s is not a number — using %d', name, shown, spec.default)]
+    endif
+    var lower: number = spec.min
+    var upper: number = spec.max
+    var given: number = raw
+    var clamped = min([upper, max([lower, given])])
+    return [clamped, clamped == given ? '' :
+      printf('g:%s = %d is outside %d..%d — using %d',
+        name, given, lower, upper, clamped)]
+  elseif spec.kind ==# 'choice'
+    var allowed: list<string> = spec.allowed
+    if type(raw) == v:t_string && index(allowed, raw) >= 0
+      return [raw, '']
+    endif
+    return [spec.default,
+      printf('g:%s = %s is not one of %s — using %s',
+        name, shown, join(allowed, '/'), string(spec.default))]
+  elseif spec.kind ==# 'strings'
+    if type(raw) != v:t_list
+      return [copy(spec.default),
+        printf('g:%s = %s is not a list of strings — using %s',
+          name, shown, string(spec.default))]
+    endif
+    var given: list<any> = raw
+    var kept = filter(copy(given), (_, item) => type(item) == v:t_string)
+    var lost = len(given) - len(kept)
+    return [kept, lost == 0 ? '' :
+      printf('g:%s: %d entr%s was not a string and %s dropped',
+        name, lost, lost == 1 ? 'y' : 'ies', lost == 1 ? 'was' : 'were')]
+  elseif spec.kind ==# 'mappings'
+    if type(raw) != v:t_dict
+      return [{}, printf('g:%s = %s is not a dictionary — using {}', name, shown)]
+    endif
+    var given: dict<any> = raw
+    var kept = filter(copy(given), (_, value) => type(value) == v:t_string)
+    var lost = len(given) - len(kept)
+    return [kept, lost == 0 ? '' :
+      printf('g:%s: %d entr%s did not name a key sequence and %s dropped',
+        name, lost, lost == 1 ? 'y' : 'ies', lost == 1 ? 'was' : 'were')]
+  endif
+  # 'string': a path.  Whether it exists is the backend's answer to give, not
+  # this table's; all that is checked here is that it is text at all.
+  if type(raw) == v:t_string
+    return [raw, '']
+  endif
+  return [spec.default, printf('g:%s = %s is not a string — using ""', name, shown)]
+enddef
+
+
+# A fresh copy for a container default, so that a caller that mutates what it
+# was handed cannot edit the table itself.
+def DefaultOf(spec: dict<any>): any
+  return type(spec.default) == v:t_list || type(spec.default) == v:t_dict
+    ? copy(spec.default)
+    : spec.default
+enddef
+
+
+# Every option there is, in the order the table declares them.  Exported for
+# tests/vim_config.vim, which holds this list against the `*g:simplemarkdown_*`
+# tags in doc/simplemarkdown.txt: the two are the same set or one of them is
+# lying.
+export def SettingNames(): list<string>
+  return mapnew(SETTINGS, (_, spec) => spec.name)
+enddef
+
+
+# The validated value of one option, whatever the user has done to it since the
+# plugin loaded.  Every read of a `g:` option goes through here, bar the two the
+# vendored supervisor reads by name — see SyncCoreSettings().
+export def Setting(name: string): any
+  if !has_key(SETTING_BY_NAME, name)
+    # Not a name in the table: this plugin's typo rather than a user's, and
+    # answering 0 would be a silent wrong default in whatever asked for it.
+    # Loud, because only this repository can produce it — and `make
+    # check-settings` proves no caller does.
+    throw 'simplemarkdown: no such setting: ' .. name
+  endif
+  var spec = SETTING_BY_NAME[name]
+  if !exists('g:' .. name)
+    return DefaultOf(spec)
+  endif
+  return Coerce(spec, g:[name])[0]
+enddef
+
+
+# Put one option's validated value into `g:`, and remember what had to be
+# corrected to get there — the rewrite destroys the evidence, so it is kept
+# here or it is lost.
+def Adopt(spec: dict<any>)
+  var name: string = spec.name
+  if has_key(corrections, name) && !StillAsNormalized(name, corrections[name].value)
+    # `g:` no longer holds what we put there, so whatever is there now
+    # supersedes what we remembered.  Guarded, and not simply dropped: Adopt()
+    # is called again on every use of the backend, and a second pass over an
+    # already-corrected value finds nothing wrong with it — which would erase
+    # the only record that anything ever was.
+    remove(corrections, name)
+  endif
+  # exists(), not get() with a fallback: an unset variable and one the user set
+  # to an empty list are indistinguishable through get(), and defaulting the
+  # unset case to [] leaves the plugin recognising no filetype at all.
+  if !exists('g:' .. name)
+    g:[name] = DefaultOf(spec)
+    return
+  endif
+  var [value, complaint] = Coerce(spec, g:[name])
+  g:[name] = value
+  if complaint !=# ''
+    corrections[name] = {said: complaint, value: value}
+  endif
+enddef
+
+
+# Called once from plugin/simplemarkdown.vim: every documented option ends up
+# present, of the documented type and inside its documented range, so that the
+# code and the tests that read `g:` plainly — and a user reading `:echo g:` —
+# all see the value actually in force.
+export def NormalizeConfig()
+  corrections = {}
+  for spec in SETTINGS
+    Adopt(spec)
+  endfor
+enddef
+
+
+# Is `g:name` still exactly what Adopt() wrote into it?  The types are compared
+# first, and not only as an optimisation: Vim9 refuses to compare a string with
+# a number outright, and `g:simplemarkdown_tab_width` going from the 4 we wrote
+# to a later `'eight'` is precisely the case this is asked about.
+def StillAsNormalized(name: string, value: any): bool
+  if !exists('g:' .. name)
+    return false
+  endif
+  var current: any = g:[name]
+  return type(current) == type(value) && current == value
+enddef
+
+
+# Levenshtein distance, used only to turn a misspelt option name into a
+# suggestion.  Both names carry the same 15-character prefix, so the matrix is
+# small and this runs at most once per unknown variable per report.
+def Distance(a: string, b: string): number
+  var left = split(a, '\zs')
+  var right = split(b, '\zs')
+  var previous = range(len(right) + 1)
+  for i in range(len(left))
+    var current = [i + 1]
+    for j in range(len(right))
+      add(current, min([
+        previous[j] + (left[i] ==# right[j] ? 0 : 1),
+        previous[j + 1] + 1,
+        current[j] + 1,
+      ]))
+    endfor
+    previous = current
+  endfor
+  return previous[-1]
+enddef
+
+
+# The option a stray `g:simplemarkdown_` variable was probably meant to be, or
+# '' when nothing is close enough.  Two edits in a name this long is a slip;
+# more than that is a different word, and guessing at it would be noise.
+def NearestSetting(name: string): string
+  var best = ''
+  var best_distance = 3
+  for spec in SETTINGS
+    var distance = Distance(name, spec.name)
+    if distance < best_distance
+      best = spec.name
+      best_distance = distance
+    endif
+  endfor
+  return best
+enddef
+
+
+# Everything wrong with the configuration right now, as `[WARN]`/`[INFO]`
+# lines: the values that had to be corrected, and any `g:simplemarkdown_`
+# variable that is not an option at all — which is what a misspelt option looks
+# like, and is otherwise perfectly silent, because nothing ever reads it.
+#
+# At most one line per option: a value broken right now describes itself, and
+# is the more useful of the two things that could be said about it.
+export def ValidateConfig(): list<string>
+  var problems: list<string> = []
+  for spec in SETTINGS
+    var name: string = spec.name
+    var complaint: string = exists('g:' .. name) ? Coerce(spec, g:[name])[1] : ''
+    if complaint ==# '' && has_key(corrections, name)
+      # Nothing wrong with the value in force, but this option did not arrive
+      # at it on its own: while `g:` still holds what the correction wrote, the
+      # correction is the only surviving account of what the user asked for.
+      if StillAsNormalized(name, corrections[name].value)
+        complaint = corrections[name].said
+      endif
+    endif
+    if complaint !=# ''
+      add(problems, '[WARN] ' .. complaint)
+    endif
+  endfor
+  for name in sort(keys(g:))
+    if name !~# '^simplemarkdown_' || has_key(SETTING_BY_NAME, name)
+      continue
+    endif
+    var nearest = NearestSetting(name)
+    add(problems, printf('[INFO] g:%s is not an option this plugin has%s',
+      name, nearest ==# '' ? '' : printf(' — did you mean g:%s?', nearest)))
+  endfor
+  return problems
+enddef
+
+
+# Said once, the first time the backend is wanted.  Not at load — a plugin that
+# echoes while Vim is still starting is a plugin whose message is scrolled away
+# by the next one — and not on every render either, which is the other way to
+# make a warning invisible.
+def WarnAboutConfigOnce()
+  if config_warned
+    return
+  endif
+  config_warned = true
+  var problems = ValidateConfig()
+  if empty(problems)
+    return
+  endif
+  Warn(printf('%d configuration problem%s (:SimpleMarkdownHealth lists them again):',
+    len(problems), len(problems) == 1 ? '' : 's'))
+  for problem in problems
+    Warn('  ' .. substitute(problem, '^\[\a\+\] ', '', ''))
+  endfor
+enddef
+
 # ─────────────────────────── logging ───────────────────────────
 
 def Log(message: string)
@@ -156,7 +519,7 @@ def SetupCore()
     exe: 'simplemarkdown-daemon',
     path_var: 'simplemarkdown_daemon_path',
     debug_var: 'simplemarkdown_debug',
-    auto_restart: get(g:, 'simplemarkdown_auto_restart', 1) ? true : false,
+    auto_restart: Setting('simplemarkdown_auto_restart') ? true : false,
     request_timeout_ms: RENDER_TIMEOUT_MS,
     handshake: {request: {type: 'ping'}, reply_type: 'pong'},
     OnReady: OnDaemonReady,
@@ -165,8 +528,25 @@ def SetupCore()
 enddef
 
 
+# The two options the supervisor reads out of `g:` by name rather than through
+# us — it is vendored from simplecore and shared with nine other plugins, so it
+# knows the names and nothing else about them.  Writing the validated value
+# back is what makes "checked again on every read" true of these two as well:
+# `!!get(g:, 'simplemarkdown_debug', 0)` on a string is a hard E1135 inside the
+# logger, which is a poor place to discover a typo.
+def SyncCoreSettings()
+  Adopt(SETTING_BY_NAME['simplemarkdown_daemon_path'])
+  Adopt(SETTING_BY_NAME['simplemarkdown_debug'])
+enddef
+
+
 def EnsureBackend(): bool
+  # Before SetupCore(), which resolves the executable, and before the warning,
+  # so that a value broken since load is corrected and reported in the same
+  # breath as everything else.
+  SyncCoreSettings()
   SetupCore()
+  WarnAboutConfigOnce()
   return simplemarkdown#core#Ensure()
 enddef
 
@@ -319,7 +699,7 @@ def IsMarkdownBuffer(bufnr: number): bool
   if type(filetype) != v:t_string
     return false
   endif
-  if index(get(g:, 'simplemarkdown_filetypes', []), filetype) >= 0
+  if index(Setting('simplemarkdown_filetypes'), filetype) >= 0
     return true
   endif
   # A file that has not been given a filetype yet — a fresh :edit on a machine
@@ -427,8 +807,8 @@ enddef
 # ─────────────────────────── opening and closing ───────────────────────────
 
 def ComputeWidth(): number
-  var configured = get(g:, 'simplemarkdown_width', 0)
-  var minimum = get(g:, 'simplemarkdown_min_width', 30)
+  var configured = Setting('simplemarkdown_width')
+  var minimum = Setting('simplemarkdown_min_width')
   if configured > 0
     return max([minimum, min([configured, &columns - 10])])
   endif
@@ -456,7 +836,7 @@ def OpenForCurrentTab(): string
   var src_bufnr = src_info.bufnr
 
   var origin = win_getid()
-  var side = get(g:, 'simplemarkdown_side', 'right') ==# 'left' ? 'topleft' : 'botright'
+  var side = Setting('simplemarkdown_side') ==# 'left' ? 'topleft' : 'botright'
   var width = ComputeWidth()
 
   # `:40vnew` is a range, and Vim9 wants a colon before one inside :execute;
@@ -481,7 +861,7 @@ def OpenForCurrentTab(): string
   silent! execute 'file ' .. fnameescape(title)
   b:simplemarkdown_preview = 1
 
-  if get(g:, 'simplemarkdown_default_mappings', 1)
+  if Setting('simplemarkdown_default_mappings')
     SetupBufferMappings()
   endif
 
@@ -553,7 +933,7 @@ const PREVIEW_MAPPINGS: list<list<string>> = [
 # An empty string means the user turned that one off — which used to require
 # turning all of them off.
 def PreviewKey(action: string, fallback: string): string
-  var overrides = get(g:, 'simplemarkdown_preview_mappings', {})
+  var overrides = Setting('simplemarkdown_preview_mappings')
   if type(overrides) != v:t_dict || !has_key(overrides, action)
     return fallback
   endif
@@ -679,7 +1059,7 @@ def Schedule(key: string, delay: number = -1)
     timer_stop(session.timer)
     session.timer = 0
   endif
-  var wait = delay >= 0 ? delay : get(g:, 'simplemarkdown_debounce', 120)
+  var wait = delay >= 0 ? delay : Setting('simplemarkdown_debounce')
   if wait <= 0
     Render(key)
     return
@@ -702,17 +1082,17 @@ enddef
 
 def Options(): dict<any>
   return {
-    unicode: get(g:, 'simplemarkdown_style', 'unicode') ==# 'unicode' ? true : false,
-    syntax: get(g:, 'simplemarkdown_syntax', 1) ? true : false,
-    wrap: get(g:, 'simplemarkdown_wrap', 1) ? true : false,
-    code_wrap: get(g:, 'simplemarkdown_code_wrap', 1) ? true : false,
-    show_urls: get(g:, 'simplemarkdown_show_urls', 0) ? true : false,
-    frontmatter: get(g:, 'simplemarkdown_frontmatter', 1) ? true : false,
-    max_width: get(g:, 'simplemarkdown_max_text_width', 0),
-    tab_width: get(g:, 'simplemarkdown_tab_width', 4),
-    code_numbers: get(g:, 'simplemarkdown_code_numbers', 0) ? true : false,
-    table_zebra: get(g:, 'simplemarkdown_table_zebra', 0) ? true : false,
-    task_progress: get(g:, 'simplemarkdown_task_progress', 1) ? true : false,
+    unicode: Setting('simplemarkdown_style') ==# 'unicode' ? true : false,
+    syntax: Setting('simplemarkdown_syntax') ? true : false,
+    wrap: Setting('simplemarkdown_wrap') ? true : false,
+    code_wrap: Setting('simplemarkdown_code_wrap') ? true : false,
+    show_urls: Setting('simplemarkdown_show_urls') ? true : false,
+    frontmatter: Setting('simplemarkdown_frontmatter') ? true : false,
+    max_width: Setting('simplemarkdown_max_text_width'),
+    tab_width: Setting('simplemarkdown_tab_width'),
+    code_numbers: Setting('simplemarkdown_code_numbers') ? true : false,
+    table_zebra: Setting('simplemarkdown_table_zebra') ? true : false,
+    task_progress: Setting('simplemarkdown_task_progress') ? true : false,
   }
 enddef
 
@@ -774,7 +1154,7 @@ def Render(key: string)
     session: key,
     # Only claim a patch can be applied when this session is actually holding
     # the rows the daemon thinks it sent.
-    incremental: session.rendered && get(g:, 'simplemarkdown_incremental', 1) ? true : false,
+    incremental: session.rendered && Setting('simplemarkdown_incremental') ? true : false,
   }, (reply) => {
     OnRenderReply(key, generation, source_bufnr, source_changedtick, reply)
   }, RENDER_TIMEOUT_MS)
@@ -952,7 +1332,7 @@ def Apply(key: string, reply: dict<any>): bool
 
   # Re-anchor on the source cursor: after an edit the row a given source line
   # maps to has usually moved.
-  if get(g:, 'simplemarkdown_sync_scroll', 1)
+  if Setting('simplemarkdown_sync_scroll')
     SyncToSource(key, true)
   endif
   HighlightBlock(key, true)
@@ -1235,7 +1615,7 @@ def HighlightBlock(key: string, force: bool = false)
     return
   endif
   var session = sessions[key]
-  if !get(g:, 'simplemarkdown_focus_block', 1) || !bufexists(session.bufnr)
+  if !Setting('simplemarkdown_focus_block') || !bufexists(session.bufnr)
     return
   endif
   if !WindowExists(session.src_winid)
@@ -1324,7 +1704,7 @@ enddef
 var last_hint = ''
 
 def HintLink(session: dict<any>)
-  if !get(g:, 'simplemarkdown_link_hint', 1)
+  if !Setting('simplemarkdown_link_hint')
     return
   endif
   var link = LinkAtCursor(session, line('.'), col('.'), true)
@@ -1349,7 +1729,7 @@ enddef
 
 
 def SyncToPreview(key: string)
-  if !get(g:, 'simplemarkdown_sync_back', 0)
+  if !Setting('simplemarkdown_sync_back')
     return
   endif
   var session = sessions[key]
@@ -1429,7 +1809,7 @@ enddef
 # the list is filled, nothing is opened and nothing is echoed — because a
 # command that grabs the screen on every `:w` is one people stop saving with.
 export def OnWritten(bufnr: number)
-  if !get(g:, 'simplemarkdown_lint_on_write', 0)
+  if !Setting('simplemarkdown_lint_on_write')
     return
   endif
   if bufnr <= 0 || bufnr != bufnr('%') || !IsMarkdownBuffer(bufnr)
@@ -1447,7 +1827,7 @@ export def OnCursorMoved(winid: number)
     SyncToPreview(preview)
     return
   endif
-  if !get(g:, 'simplemarkdown_sync_scroll', 1)
+  if !Setting('simplemarkdown_sync_scroll')
     return
   endif
   for [key, session] in items(sessions)
@@ -1509,7 +1889,7 @@ export def OnWinClosed(winid: number)
     return
   endif
   # The source window went away: without one there is nothing to preview.
-  if !get(g:, 'simplemarkdown_auto_close', 1)
+  if !Setting('simplemarkdown_auto_close')
     return
   endif
   for [session_key, session] in items(sessions)
@@ -1535,7 +1915,7 @@ export def OnBufferWipeout(bufnr: number)
   for [key, session] in items(sessions)
     if session.bufnr == bufnr
       DropSession(key)
-    elseif session.src_bufnr == bufnr && get(g:, 'simplemarkdown_auto_close', 1)
+    elseif session.src_bufnr == bufnr && Setting('simplemarkdown_auto_close')
       CloseSession(key)
     endif
   endfor
@@ -1544,7 +1924,7 @@ enddef
 
 
 export def MaybeAutoOpen()
-  if !get(g:, 'simplemarkdown_auto_open', 0)
+  if !Setting('simplemarkdown_auto_open')
     return
   endif
   if !IsMarkdownBuffer(bufnr('%'))
@@ -1645,7 +2025,7 @@ export def Resize(argument: string)
   var key = CurrentSessionKey()
   var wanted = str2nr(trim(argument))
   if wanted > 0
-    g:simplemarkdown_width = max([get(g:, 'simplemarkdown_min_width', 30), wanted])
+    g:simplemarkdown_width = max([Setting('simplemarkdown_min_width'), wanted])
   endif
   if key ==# ''
     return
@@ -1668,7 +2048,7 @@ export def SetStyle(argument: string)
     # No argument cycles rather than reporting, matching :SimpleMinimapStyle.
     # It is what makes a single key worth binding: printing the value you are
     # already looking at is not an action.
-    var current = index(styles, get(g:, 'simplemarkdown_style', 'unicode'))
+    var current = index(styles, Setting('simplemarkdown_style'))
     wanted = styles[current < 0 ? 0 : (current + 1) % len(styles)]
   endif
   if index(styles, wanted) < 0
@@ -1742,6 +2122,15 @@ export def Health()
     last_patch_rows >= 0 ? printf(' (last patch: %d rows)', last_patch_rows) : ''))
   add(lines, printf('[%s] text properties: %s',
     has('textprop') ? 'OK' : 'ERROR', has('textprop') ? 'available' : 'missing'))
+  # The configuration, including what was quietly corrected at load.  An option
+  # that does not hold what it says it holds is the first thing to rule out and
+  # the last thing anyone thinks to check, because `g:` reads back as correct.
+  var problems = ValidateConfig()
+  if empty(problems)
+    add(lines, printf('[OK] config: %d options, all valid', len(SETTINGS)))
+  else
+    lines += problems
+  endif
   lines += simplemarkdown#external#HealthLines()
   for line in lines
     echo line
@@ -1757,7 +2146,7 @@ export def DebugStatus(): dict<any>
     sessions: len(sessions),
     in_flight: len(requests),
     last_render_ms: last_elapsed_ms,
-    style: get(g:, 'simplemarkdown_style', 'unicode'),
+    style: Setting('simplemarkdown_style'),
     patched_renders: patched_renders,
     full_renders: full_renders,
     last_patch_rows: last_patch_rows,
@@ -2901,7 +3290,7 @@ enddef
 # folds.
 export def SetupFolding()
   var buf = bufnr('%')
-  if !get(g:, 'simplemarkdown_folding', 0) || !IsMarkdownBuffer(buf)
+  if !Setting('simplemarkdown_folding') || !IsMarkdownBuffer(buf)
     return
   endif
   setlocal foldmethod=expr
@@ -2928,6 +3317,6 @@ enddef
 export def FoldText(): string
   var text = substitute(getline(v:foldstart), '^\s*#\+\s*', '', '')
   var count = v:foldend - v:foldstart + 1
-  var mark = get(g:, 'simplemarkdown_style', 'unicode') ==# 'unicode' ? '▸' : '+'
+  var mark = Setting('simplemarkdown_style') ==# 'unicode' ? '▸' : '+'
   return printf('%s %s  (%d lines)', mark, text, count)
 enddef

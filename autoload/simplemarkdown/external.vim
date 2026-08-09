@@ -20,8 +20,11 @@ vim9script
 # shadow copy of the buffer on disk.
 # =============================================================================
 
-const DEFAULT_HOST = '127.0.0.1'
-const DEFAULT_PORT = 3030
+# Where a probe — and the browser this plugin opens — has to go when omd was
+# asked to bind a wildcard address.  Not the default for
+# |g:simplemarkdown_omd_host|: since the settings table exists, every default
+# is declared there and nowhere else.
+const LOOPBACK = '127.0.0.1'
 # How far above the configured port to look for a free one before giving up.
 const PORT_ATTEMPTS = 24
 # A server that dies this fast never bound its port; report its stderr rather
@@ -70,8 +73,10 @@ enddef
 # ─────────────────────────── the omd binary ───────────────────────────
 
 export def Executable(): string
-  var configured = get(g:, 'simplemarkdown_omd_path', '')
-  if type(configured) == v:t_string && configured !=# ''
+  # Typed rather than checked: the settings table has already guaranteed a
+  # string here, which is the point of asking it rather than g: directly.
+  var configured: string = simplemarkdown#Setting('simplemarkdown_omd_path')
+  if configured !=# ''
     return executable(configured) ? exepath(configured) : ''
   endif
   if executable('omd')
@@ -101,7 +106,7 @@ enddef
 # A wildcard bind is reachable on the loopback address, and that is where a
 # probe — and the browser this plugin opens — has to go.
 def ConnectHost(host: string): string
-  return host ==# '0.0.0.0' || host ==# '::' ? DEFAULT_HOST : host
+  return host ==# '0.0.0.0' || host ==# '::' ? LOOPBACK : host
 enddef
 
 
@@ -205,8 +210,8 @@ export def Open()
     return
   endif
 
-  var host = get(g:, 'simplemarkdown_omd_host', DEFAULT_HOST)
-  var base = get(g:, 'simplemarkdown_omd_port', DEFAULT_PORT)
+  var host: string = simplemarkdown#Setting('simplemarkdown_omd_host')
+  var base: number = simplemarkdown#Setting('simplemarkdown_omd_port')
   var port = Claim(host, base)
   if port == 0
     Warn(printf('no free port in %d-%d; set g:simplemarkdown_omd_port.',
@@ -214,9 +219,8 @@ export def Open()
     return
   endif
 
-  var argv = [exe, '--host', host, '--port', string(port)]
-    + get(g:, 'simplemarkdown_omd_args', [])
-    + [path]
+  var extra: list<string> = simplemarkdown#Setting('simplemarkdown_omd_args')
+  var argv = [exe, '--host', host, '--port', string(port)] + extra + [path]
   var url = printf('http://%s:%d', ConnectHost(host), port)
   var errors: list<string> = []
 
@@ -251,11 +255,12 @@ export def Open()
   }
   Log(printf('omd serving %s on %s', path, url))
 
-  if get(g:, 'simplemarkdown_omd_browser', 1)
+  if simplemarkdown#Setting('simplemarkdown_omd_browser')
     # omd binds its socket before it prints anything, but the browser is a
     # separate process racing it; a short beat is cheaper than a 'connection
     # refused' page the user then has to reload by hand.
-    timer_start(get(g:, 'simplemarkdown_omd_browser_delay', 250), (_) => {
+    var delay: number = simplemarkdown#Setting('simplemarkdown_omd_browser_delay')
+    timer_start(delay, (_) => {
       if has_key(previews, key)
         Browse(url)
       endif
@@ -335,7 +340,8 @@ export def Static()
     return
   endif
   var errors: list<string> = []
-  var job = job_start([exe, '--static-mode'] + get(g:, 'simplemarkdown_omd_args', []) + [path], {
+  var extra: list<string> = simplemarkdown#Setting('simplemarkdown_omd_args')
+  var job = job_start([exe, '--static-mode'] + extra + [path], {
     in_io: 'null',
     err_cb: (_, message) => {
       add(errors, message)

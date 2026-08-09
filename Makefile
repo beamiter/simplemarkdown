@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-authoring test-lint test-outline test-protocol test-external clean vim-core defcompile check-classes check-codes check-protocol preview bench core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-links test-format test-authoring test-lint test-outline test-protocol test-external test-config clean vim-core defcompile check-classes check-codes check-protocol check-settings preview bench core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon check-protocol check-classes check-codes defcompile vim-core test-vim test-links test-format test-authoring test-lint test-outline test-protocol test-external
+check: core-verify fmt clippy test test-daemon check-protocol check-classes check-codes check-settings defcompile vim-core test-vim test-links test-format test-authoring test-lint test-outline test-protocol test-external test-config
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -120,6 +120,28 @@ check-codes: build
 	done < /tmp/simplemarkdown-codes
 	@echo "codes: every diagnostic the daemon can emit is documented"
 
+# Every `g:` option is read through simplemarkdown#Setting(), which answers a
+# name the settings table does not declare with an exception — the right answer
+# for a typo in this repository, and a wrong one to discover from a cold branch
+# inside a channel callback.  :defcompile cannot catch it: the name is a string.
+# So the two lists are compared here, both read from the source that owns them.
+# (That the table and the *help* are the same set is asserted from Vim, in
+# tests/vim_config.vim, where the table can be asked rather than parsed.)
+check-settings:
+	@sed -n "s/^  {name: '\([a-z_]*\)'.*/\1/p" autoload/simplemarkdown.vim \
+		| sort -u > /tmp/simplemarkdown-settings-declared
+	@grep -ho "Setting('[a-z_]*')" \
+		autoload/simplemarkdown.vim autoload/simplemarkdown/external.vim plugin/simplemarkdown.vim \
+		| sed "s/^Setting('//; s/')$$//" | sort -u > /tmp/simplemarkdown-settings-used
+	@test -s /tmp/simplemarkdown-settings-declared \
+		|| { echo "no settings table found in autoload/simplemarkdown.vim"; exit 1; }
+	@test -s /tmp/simplemarkdown-settings-used \
+		|| { echo "nothing reads a setting; the grep above has gone stale"; exit 1; }
+	@unknown="$$(comm -13 /tmp/simplemarkdown-settings-declared /tmp/simplemarkdown-settings-used)"; \
+	test -z "$$unknown" \
+		|| { echo "Setting() asks for names the table does not declare: $$unknown"; exit 1; }
+	@echo "settings: every name Setting() is asked for is in the table"
+
 test-vim: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_smoke.vim
 
@@ -169,6 +191,14 @@ test-protocol:
 # one server per buffer, and teardown.  Needs no omd installed.
 test-external:
 	vim -Nu NONE -n -i NONE -es -S tests/vim_external.vim
+
+# Configuration: a `g:` option that does not hold what it says it holds.  Its
+# own file because every assertion in it needs options set wrong *before* the
+# plugin loads — the case that used to be silent, since normalising rewrites
+# `g:` and the mistake is gone by the time anyone looks — which no other test
+# can arrange without breaking its own fixture.
+test-config: build
+	vim -Nu NONE -n -i NONE -es -S tests/vim_config.vim
 
 # The first render, the steady-state renders after it (the gap between the two
 # is the highlight cache), and the patch one edit produces.  The CHANGELOG
