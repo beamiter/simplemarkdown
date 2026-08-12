@@ -1,0 +1,1242 @@
+/*
+ * preview.css — everything the browser preview looks like.
+ *
+ * The sheet is inlined into the page by html.rs, so it stands entirely on its
+ * own: no build step, no framework, no @import, no web font.  A document that
+ * renders offline in one file is worth more here than any convenience a
+ * toolchain could add, and a preview that pauses to fetch a stylesheet flashes
+ * unstyled text on every reload.  The reset at the top exists for the same
+ * reason — the browser's default sheet is the only thing upstream of us.
+ *
+ * The target is the reading experience of GitHub and markdown-preview.nvim:
+ * light by default, dark when the OS asks, one generous centred column, and
+ * nothing on screen that competes with the text.  The chrome (the button
+ * cluster, the contents rail) is deliberately faint until you reach for it.
+ *
+ * Two decisions run through the whole file:
+ *
+ * *Chinese and English in the same paragraph.*  The documents this previews
+ * are mixed CJK/Latin, which rules out several habits that look fine in pure
+ * English.  Body leading is 1.75 rather than the usual 1.5, because Han
+ * characters fill their em box and lines set at 1.5 read as a grey wall.
+ * Nothing is letter-spaced — tracking added to CJK spaces out characters that
+ * are already monospaced by design.  Nothing decorative is italicised either:
+ * almost no CJK font ships an italic, so browsers synthesise one by shearing
+ * the glyphs, and a sheared paragraph of Chinese is genuinely hard to read.
+ * That is why quotes and code comments here are upright.
+ *
+ * *Every colour comes from a token.*  The light palette is the complete set,
+ * declared on bare `:root`; the dark palette redeclares only the base tokens,
+ * twice — once behind the OS preference and once behind an explicit
+ * `[data-theme="dark"]`, so the in-page toggle can override the OS in both
+ * directions.  Nothing keys off `[data-theme="auto"]`: "auto" is the absence
+ * of an override, so the OS query must be what answers for it.
+ */
+
+/* ─────────────────────────── light palette ─────────────────────────── */
+
+/*
+ * GitHub's colours, near enough exactly.  Not for want of imagination: this is
+ * the palette every reader of Markdown already has their eyes calibrated to,
+ * and a preview is not the place to make someone learn a new one.  Every
+ * pairing used for body-sized text clears 4.5:1 against its own surface.
+ */
+:root {
+  color-scheme: light;
+
+  --sm-page: #ffffff;
+  --sm-text: #1f2328;
+  --sm-muted: #59636e;
+  --sm-border: #d1d9e0;
+  --sm-fill: #f6f8fa;
+  --sm-accent: #0969da;
+
+  /* The five GFM alert hues, and the two the status dot uses. */
+  --sm-note: #0969da;
+  --sm-tip: #1a7f37;
+  --sm-important: #8250df;
+  --sm-warning: #9a6700;
+  --sm-caution: #cf222e;
+
+  /* An alert's title sits on a 10% wash of its own hue, which costs about a
+     tenth of the contrast the same colour has on the page — enough to put
+     three of the five under 4.5:1 at the weight a title is set in.  The rule
+     down the side keeps the vivid colour; only the ink is darkened, and only
+     here, because the dark palette clears the bar on its own. */
+  /* Same reason as the alert inks: the accent on its own 12% wash is a little
+     under 4.5:1, and the contents rail marks where you are with exactly that
+     pairing.  Icons keep the bright accent — they answer to 3:1. */
+  --sm-accent-ink: #0550ae;
+
+  --sm-note-ink: #0550ae;
+  --sm-tip-ink: #116329;
+  --sm-important-ink: #6639ba;
+  --sm-warning-ink: #7d4e00;
+  --sm-caution-ink: #a40e26;
+  --sm-ok: #1a7f37;
+  --sm-warn: #9a6700;
+
+  /* Shadows are the one thing that cannot be mixed from the palette: they
+     need the ink of the *opposite* end of the scale at low alpha. */
+  --sm-shadow: rgb(31 35 40 / 12%);
+
+  --sm-syn-keyword: #cf222e;
+  --sm-syn-string: #0a3069;
+  --sm-syn-comment: #59636e;
+  --sm-syn-number: #0550ae;
+  --sm-syn-boolean: #0550ae;
+  --sm-syn-type: #953800;
+  --sm-syn-function: #8250df;
+  --sm-syn-constant: #0550ae;
+  --sm-syn-variable: #953800;
+  --sm-syn-property: #953800;
+  --sm-syn-preproc: #6639ba;
+  --sm-syn-tag: #116329;
+  --sm-syn-escape: #0a3069;
+  --sm-syn-invalid: #82071e;
+}
+
+/* ─────────────────────────── dark palette ─────────────────────────── */
+
+/*
+ * `@media screen` on both dark blocks is what lets the print rules at the
+ * bottom of the file stay short: a reader printing from a dark page falls back
+ * to the light palette on its own, with no third copy of these tokens.
+ */
+@media screen and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --sm-page: #0d1117;
+    --sm-text: #e6edf3;
+    --sm-muted: #9198a1;
+    --sm-border: #3d444d;
+    --sm-fill: #151b23;
+    --sm-accent: #4493f8;
+
+    --sm-note: #4493f8;
+    --sm-tip: #3fb950;
+    --sm-important: #ab7df8;
+    --sm-warning: #d29922;
+    --sm-caution: #f85149;
+
+    --sm-accent-ink: #4493f8;
+
+    --sm-note-ink: #4493f8;
+    --sm-tip-ink: #3fb950;
+    --sm-important-ink: #ab7df8;
+    --sm-warning-ink: #d29922;
+    --sm-caution-ink: #f85149;
+    --sm-ok: #3fb950;
+    --sm-warn: #d29922;
+
+    --sm-shadow: rgb(1 4 9 / 60%);
+
+    --sm-syn-keyword: #ff7b72;
+    --sm-syn-string: #a5d6ff;
+    --sm-syn-comment: #9198a1;
+    --sm-syn-number: #79c0ff;
+    --sm-syn-boolean: #79c0ff;
+    --sm-syn-type: #ffa657;
+    --sm-syn-function: #d2a8ff;
+    --sm-syn-constant: #79c0ff;
+    --sm-syn-variable: #ffa657;
+    --sm-syn-property: #ffa657;
+    --sm-syn-preproc: #d2a8ff;
+    --sm-syn-tag: #7ee787;
+    --sm-syn-escape: #a5d6ff;
+    --sm-syn-invalid: #ffa198;
+  }
+}
+
+@media screen {
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+
+    --sm-page: #0d1117;
+    --sm-text: #e6edf3;
+    --sm-muted: #9198a1;
+    --sm-border: #3d444d;
+    --sm-fill: #151b23;
+    --sm-accent: #4493f8;
+
+    --sm-note: #4493f8;
+    --sm-tip: #3fb950;
+    --sm-important: #ab7df8;
+    --sm-warning: #d29922;
+    --sm-caution: #f85149;
+
+    --sm-accent-ink: #4493f8;
+
+    --sm-note-ink: #4493f8;
+    --sm-tip-ink: #3fb950;
+    --sm-important-ink: #ab7df8;
+    --sm-warning-ink: #d29922;
+    --sm-caution-ink: #f85149;
+    --sm-ok: #3fb950;
+    --sm-warn: #d29922;
+
+    --sm-shadow: rgb(1 4 9 / 60%);
+
+    --sm-syn-keyword: #ff7b72;
+    --sm-syn-string: #a5d6ff;
+    --sm-syn-comment: #9198a1;
+    --sm-syn-number: #79c0ff;
+    --sm-syn-boolean: #79c0ff;
+    --sm-syn-type: #ffa657;
+    --sm-syn-function: #d2a8ff;
+    --sm-syn-constant: #79c0ff;
+    --sm-syn-variable: #ffa657;
+    --sm-syn-property: #ffa657;
+    --sm-syn-preproc: #d2a8ff;
+    --sm-syn-tag: #7ee787;
+    --sm-syn-escape: #a5d6ff;
+    --sm-syn-invalid: #ffa198;
+  }
+}
+
+/* ───────────────────── derived tokens and metrics ───────────────────── */
+
+/*
+ * Written once for both themes.  `var()` is resolved against whichever palette
+ * won the cascade, so a fill mixed here from `--sm-accent` and `--sm-page` is
+ * automatically the dark tint on a dark page — the alternative was a third and
+ * fourth copy of two dozen tints that could then drift apart.
+ */
+:root {
+  --sm-code-bg: var(--sm-fill);
+  --sm-code-head: color-mix(in srgb, var(--sm-border) 25%, var(--sm-fill));
+  --sm-code-inline: color-mix(in srgb, var(--sm-border) 40%, var(--sm-page));
+  --sm-stripe: color-mix(in srgb, var(--sm-fill) 65%, var(--sm-page));
+  --sm-accent-fill: color-mix(in srgb, var(--sm-accent) 12%, transparent);
+  --sm-select: color-mix(in srgb, var(--sm-accent) 25%, transparent);
+  --sm-flash: color-mix(in srgb, var(--sm-accent) 15%, transparent);
+  --sm-invalid-fill: color-mix(in srgb, var(--sm-caution) 14%, transparent);
+
+  /* The bar floats over prose, so its ground is the page colour at partial
+     alpha with a blur behind it rather than an opaque slab. */
+  --sm-surface: color-mix(in srgb, var(--sm-page) 78%, transparent);
+
+  --sm-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  --sm-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", "JetBrains Mono", monospace;
+
+  --sm-toc-width: 17rem;
+  /* `--sm-max-width` is deliberately not declared: html.rs sets it inline on
+     the root element when the user configured one, and the fallback in the
+     column rule below is the default. */
+}
+
+/* ─────────────────────────── reset ─────────────────────────── */
+
+/*
+ * Only what the browser default actually gets wrong for a document: the box
+ * model, the margins we would otherwise be fighting per element (the rhythm
+ * rule further down owns vertical space), and media that would overflow the
+ * column.  `:where()` keeps all of it at zero specificity so any later rule
+ * wins without effort.
+ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+:where(h1, h2, h3, h4, h5, h6, p, ul, ol, dl, dd, figure, blockquote, pre,
+  table, hr, details) {
+  margin: 0;
+}
+
+:where(img, svg, video, canvas) {
+  max-width: 100%;
+}
+
+:where(img, video) {
+  height: auto;
+}
+
+:where(button, input) {
+  font: inherit;
+  color: inherit;
+}
+
+:where(button) {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* ─────────────────────────── page ─────────────────────────── */
+
+html {
+  /* Landscape iOS otherwise inflates the body text and nothing else, which
+     wrecks the ratios every size in this file is derived from. */
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--sm-page);
+  color: var(--sm-text);
+  font-family: var(--sm-font-sans);
+  font-size: 16px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hash links and the cursor-following scroll both land the target under the
+   top edge otherwise. */
+:target {
+  scroll-margin-top: 2rem;
+}
+
+#sm-main {
+  padding-block: 3rem 8rem;
+}
+
+/*
+ * One centred measure.  The `100% - 2rem` arm is the gutter on phones, and it
+ * is expressed as a width rather than padding so the rail shift below moves
+ * the column instead of squeezing it.
+ */
+.sm-body {
+  /* `max-width` rather than folding the cap into `width`: the cap arrives from
+     the plugin as a custom property, and `width: min(none, …)` is invalid at
+     computed-value time — one unlimited setting would take the phone's gutter
+     down with it. */
+  width: calc(100% - 2rem);
+  max-width: var(--sm-max-width, 900px);
+  margin-inline: auto;
+  /* A pasted URL or a long identifier must not widen the page; only the
+     specific blocks that opt into a scrollbar (code, tables, math) may. */
+  overflow-wrap: break-word;
+}
+
+::selection {
+  background: var(--sm-select);
+}
+
+/* Every interactive thing gets the same ring, including the ones that only
+   ever receive focus from the keyboard. */
+:focus-visible {
+  outline: 2px solid var(--sm-accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* ─────────────────────────── rhythm ─────────────────────────── */
+
+/*
+ * Spacing lives between blocks, not on them: a margin on every element has to
+ * be cancelled at the top of every container (quotes, list items, alerts,
+ * table cells), and one of those cancellations is always forgotten.  The
+ * adjacent-sibling form has no top edge to clean up by construction.
+ */
+.sm-body > * + * {
+  margin-top: 1rem;
+}
+
+/* A heading belongs to what follows it, so the space above it has to beat the
+   space below, or it reads as a caption for the paragraph it just ended. */
+.sm-body > * + :is(h1, h2) {
+  margin-top: 2.25rem;
+}
+
+.sm-body > * + :is(h3, h4, h5, h6) {
+  margin-top: 1.75rem;
+}
+
+.sm-body > * + hr,
+.sm-body > hr + * {
+  margin-top: 2.25rem;
+}
+
+/* ─────────────────────────── headings ─────────────────────────── */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 600;
+  line-height: 1.35;
+  /* Balances the last line rather than leaving one orphaned word; harmless
+     where it is unsupported. */
+  text-wrap: pretty;
+  scroll-margin-top: 2rem;
+}
+
+/* The rule under the top two levels is GitHub's, and it is doing real work in
+   a long document: it is the only horizontal line in the prose, so a section
+   boundary is findable while scrolling fast. */
+h1,
+h2 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--sm-border);
+}
+
+h1 {
+  font-size: 2em;
+}
+
+h2 {
+  font-size: 1.5em;
+}
+
+h3 {
+  font-size: 1.25em;
+}
+
+h4 {
+  font-size: 1em;
+}
+
+h5 {
+  font-size: 0.875em;
+}
+
+h6 {
+  font-size: 0.875em;
+  color: var(--sm-muted);
+}
+
+/*
+ * The anchor is chrome, so it stays out of the way until wanted — but "until
+ * wanted" has to include the keyboard, hence the focus arm: a link nobody can
+ * reach without a mouse is not a link.
+ */
+.sm-anchor {
+  margin-left: 0.35em;
+  color: var(--sm-muted);
+  font-weight: 400;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+
+:is(h1, h2, h3, h4, h5, h6):hover > .sm-anchor,
+.sm-anchor:is(:hover, :focus, :focus-visible) {
+  opacity: 1;
+}
+
+/* ─────────────────────────── inline ─────────────────────────── */
+
+a {
+  color: var(--sm-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+strong {
+  font-weight: 600;
+}
+
+del {
+  color: var(--sm-muted);
+}
+
+/* Inline code sits inside running text, so it is sized in `em` to track the
+   surrounding element rather than the root. */
+code {
+  font-family: var(--sm-font-mono);
+  font-size: 0.875em;
+  tab-size: 4;
+}
+
+:not(pre) > code {
+  padding: 0.15em 0.35em;
+  border-radius: 6px;
+  background: var(--sm-code-inline);
+}
+
+img {
+  vertical-align: middle;
+  /* A transparent PNG drawn for a light page disappears on a dark one. */
+  background: var(--sm-page);
+  border-radius: 6px;
+}
+
+hr {
+  height: 1px;
+  border: 0;
+  background: var(--sm-border);
+}
+
+/* ─────────────────────────── lists ─────────────────────────── */
+
+ul,
+ol {
+  padding-left: 1.6em;
+}
+
+li + li,
+li > :is(ul, ol) {
+  margin-top: 0.3rem;
+}
+
+li > * + * {
+  margin-top: 0.6rem;
+}
+
+/*
+ * The checkbox hangs in the marker's place: the list marker is suppressed, and
+ * the box is pulled back out of the text indent so successive lines of a long
+ * task still align with each other rather than with the box.
+ */
+li.sm-task {
+  list-style: none;
+}
+
+.sm-check {
+  margin: 0 0.45em 0 -1.5em;
+  vertical-align: -0.08em;
+  accent-color: var(--sm-accent);
+}
+
+dt {
+  font-weight: 600;
+}
+
+dd {
+  margin-left: 1.5em;
+}
+
+dl > dt:not(:first-child) {
+  margin-top: 0.8rem;
+}
+
+/* ─────────────────────────── quotes and alerts ─────────────────────────── */
+
+/*
+ * Upright, not italic.  The convention of italicising quotations comes from
+ * Latin typography and it fails badly here: no common Chinese font has an
+ * italic, so the browser shears the glyphs, and a quoted paragraph of Chinese
+ * becomes a smear.  Muting the colour carries the same "this is quoted" signal
+ * and costs nothing in either script.
+ */
+blockquote {
+  padding: 0 1em;
+  border-left: 0.25rem solid var(--sm-border);
+  color: var(--sm-muted);
+  font-style: normal;
+}
+
+blockquote > * + * {
+  margin-top: 0.75rem;
+}
+
+/*
+ * The five GFM alerts differ only by hue, so each variant sets one local
+ * token and the shared rule below reads it.  Adding a sixth is one line.
+ */
+.sm-alert {
+  padding: 0.75rem 1rem;
+  border-left: 0.25rem solid var(--sm-alert);
+  border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--sm-alert) 10%, transparent);
+  /* An alert is content, not an aside: it gets the full body colour back. */
+  color: var(--sm-text);
+}
+
+.sm-alert-note {
+  --sm-alert: var(--sm-note);
+  --sm-alert-ink: var(--sm-note-ink);
+}
+
+.sm-alert-tip {
+  --sm-alert: var(--sm-tip);
+  --sm-alert-ink: var(--sm-tip-ink);
+}
+
+.sm-alert-important {
+  --sm-alert: var(--sm-important);
+  --sm-alert-ink: var(--sm-important-ink);
+}
+
+.sm-alert-warning {
+  --sm-alert: var(--sm-warning);
+  --sm-alert-ink: var(--sm-warning-ink);
+}
+
+.sm-alert-caution {
+  --sm-alert: var(--sm-caution);
+  --sm-alert-ink: var(--sm-caution-ink);
+}
+
+.sm-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--sm-alert-ink, var(--sm-alert));
+  font-weight: 600;
+}
+
+.sm-alert-icon {
+  flex: none;
+  width: 1em;
+  height: 1em;
+  /* The icon takes the title's colour, so the markup carries no colour at
+     all and the whole set retints with the palette. */
+  fill: currentColor;
+}
+
+/* ─────────────────────────── code blocks ─────────────────────────── */
+
+.sm-code {
+  border: 1px solid var(--sm-border);
+  border-radius: 8px;
+  background: var(--sm-code-bg);
+  /* Clips the head's corners to the figure's radius. */
+  overflow: hidden;
+}
+
+/* The button is pinned right by the flex end rather than by `space-between`,
+   because a fence with no info string has no language span to push against
+   and the button would slide over to the left edge. */
+.sm-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  min-height: 2.1rem;
+  padding: 0.15rem 0.5rem 0.15rem 0.85rem;
+  border-bottom: 1px solid var(--sm-border);
+  background: var(--sm-code-head);
+}
+
+.sm-code-lang {
+  margin-right: auto;
+  color: var(--sm-muted);
+  font-family: var(--sm-font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* A fence with no info string keeps its bar — the copy button has to live
+   somewhere, and a block that changes height on hover is worse. */
+.sm-code:not([data-lang]) .sm-code-lang,
+.sm-code[data-lang=""] .sm-code-lang {
+  display: none;
+}
+
+/*
+ * Hidden until the block is under the pointer or holds focus, because in a
+ * document that is mostly code a button on every fence is visual noise.  It
+ * is still tabbable while invisible, which is why the focus-within arm and
+ * the button's own focus arm both exist.
+ */
+.sm-copy {
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--sm-border);
+  border-radius: 6px;
+  background: var(--sm-page);
+  color: var(--sm-muted);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  opacity: 0;
+  transition: opacity 0.12s ease-out, color 0.12s ease-out;
+}
+
+.sm-code:is(:hover, :focus-within) .sm-copy,
+.sm-copy:is(:focus, :focus-visible) {
+  opacity: 1;
+}
+
+.sm-copy:hover {
+  color: var(--sm-accent);
+  border-color: var(--sm-accent);
+}
+
+/* An optional hook: preview.js may set `data-copied` for a moment after a
+   successful copy, and the confirmation must not vanish with the pointer. */
+.sm-copy[data-copied] {
+  opacity: 1;
+  color: var(--sm-ok);
+  border-color: currentColor;
+}
+
+.sm-copy[data-copied="no"] {
+  color: var(--sm-caution);
+}
+
+/* Touch devices have no hover, so nothing would ever reveal the button. */
+@media (hover: none) {
+  .sm-copy {
+    opacity: 1;
+  }
+}
+
+/* The theme button is a three-way switch, not a toggle, so `aria-pressed`
+   cannot say what it is set to and the script writes `data-state` instead.
+   Both pinned states take the accent — the page has stopped following the
+   system and that is worth seeing — and the glyph is turned so that light and
+   dark are not the same picture. */
+#sm-theme[data-state="light"],
+#sm-theme[data-state="dark"] {
+  background: var(--sm-accent-fill);
+  color: var(--sm-accent);
+}
+
+#sm-theme[data-state="dark"] svg {
+  transform: rotate(180deg);
+}
+
+/*
+ * The fence scrolls, the page never does: sideways scroll on the document
+ * body is the single most disorienting thing a preview can do, and one long
+ * line of code is enough to cause it.
+ */
+.sm-code pre {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+}
+
+pre code {
+  display: block;
+  font-size: 0.875em;
+  line-height: 1.6;
+  /* A code listing wraps where its author wrapped it, or not at all. */
+  white-space: pre;
+}
+
+/* ─────────────────────────── syntax ─────────────────────────── */
+
+/*
+ * One class per syntect group, mapped one-for-one onto classes.rs.  The theme
+ * is GitHub's in both modes, for the same reason the palette is: these are the
+ * colours a reader already associates with these token kinds.
+ *
+ * Comments are not italicised — see the header; the same synthesised-oblique
+ * problem applies, and Chinese comments in code are exactly the case this
+ * preview exists to show.
+ */
+.syn-keyword {
+  color: var(--sm-syn-keyword);
+}
+
+.syn-string {
+  color: var(--sm-syn-string);
+}
+
+.syn-comment {
+  color: var(--sm-syn-comment);
+}
+
+.syn-number {
+  color: var(--sm-syn-number);
+}
+
+.syn-boolean {
+  color: var(--sm-syn-boolean);
+}
+
+.syn-type {
+  color: var(--sm-syn-type);
+}
+
+.syn-function {
+  color: var(--sm-syn-function);
+}
+
+.syn-constant {
+  color: var(--sm-syn-constant);
+}
+
+/* Operators and punctuation stay near the body colour on purpose: colouring
+   every brace is what turns a listing into confetti. */
+.syn-operator {
+  color: var(--sm-text);
+}
+
+.syn-punct {
+  color: color-mix(in srgb, var(--sm-text) 75%, var(--sm-page));
+}
+
+.syn-variable {
+  color: var(--sm-syn-variable);
+}
+
+/* A property is a variable in someone else's scope, so it shares the hue. */
+.syn-property {
+  color: var(--sm-syn-property);
+}
+
+.syn-preproc {
+  color: var(--sm-syn-preproc);
+}
+
+.syn-tag {
+  color: var(--sm-syn-tag);
+}
+
+.syn-escape {
+  color: var(--sm-syn-escape);
+}
+
+/* The only syntax class with a fill: broken input should be findable by
+   glancing at the block, not by reading it. */
+.syn-invalid {
+  color: var(--sm-syn-invalid);
+  background: var(--sm-invalid-fill);
+  border-radius: 3px;
+}
+
+/* ─────────────────────────── tables ─────────────────────────── */
+
+/* Wide tables are the other block that would otherwise widen the page. */
+.sm-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  /* Shrink to content: a two-column table stretched to the measure is mostly
+     whitespace, and the wrapper handles the ones that overflow. */
+  width: auto;
+}
+
+th,
+td {
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--sm-border);
+  /* html.rs writes alignment as an inline style, which wins over this. */
+  text-align: left;
+}
+
+thead th {
+  background: var(--sm-fill);
+  font-weight: 600;
+}
+
+/* The stripe is what lets the eye track a row across a wide table; it is
+   mixed almost to nothing so it never reads as a highlight. */
+tbody tr:nth-child(even) {
+  background: var(--sm-stripe);
+}
+
+/* ─────────────────────────── footnotes ─────────────────────────── */
+
+.sm-fnref {
+  font-size: 0.8em;
+}
+
+.sm-fnref a {
+  text-decoration: none;
+}
+
+/*
+ * Apparatus, not prose: separated by a rule, one step smaller and muted, so
+ * scrolling past the end of the document is unmistakable.
+ */
+.sm-footnotes {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--sm-border);
+  color: var(--sm-muted);
+  font-size: 0.875rem;
+}
+
+/* It is an h2 for the outline's sake, but it is not a section heading. */
+.sm-footnotes-title {
+  padding-bottom: 0;
+  border-bottom: 0;
+  font-size: 1rem;
+}
+
+.sm-footnotes li + li {
+  margin-top: 0.4rem;
+}
+
+/* Arriving from a reference in the text, the note has to be identifiable
+   among a dozen identical short lines. */
+.sm-footnotes li:target {
+  background: var(--sm-accent-fill);
+  border-radius: 4px;
+}
+
+.sm-fnback {
+  margin-left: 0.35em;
+  text-decoration: none;
+}
+
+/* ─────────────────────────── math ─────────────────────────── */
+
+/* Inline math must not touch the line box: no display change, no line-height,
+   nothing that would make one line of a paragraph taller than its neighbours
+   while the typesetter is still loading. */
+.sm-math {
+  font-size: 0.95em;
+}
+
+/* Displayed math is the third block allowed its own scrollbar. */
+.sm-math-display {
+  display: block;
+  padding-block: 0.5rem;
+  overflow-x: auto;
+  text-align: center;
+}
+
+/* ─────────────────────────── front matter ─────────────────────────── */
+
+/* Metadata the author wrote for a tool, not for a reader: present, quiet,
+   and closed until asked for. */
+.sm-frontmatter {
+  padding: 0.35rem 0.85rem;
+  border: 1px solid var(--sm-border);
+  border-radius: 8px;
+  background: var(--sm-fill);
+  color: var(--sm-muted);
+}
+
+.sm-frontmatter > summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  letter-spacing: 0.02em;
+}
+
+.sm-frontmatter pre {
+  margin-top: 0.5rem;
+  overflow-x: auto;
+}
+
+.sm-frontmatter code {
+  font-size: 0.8125rem;
+}
+
+/* ─────────────────────────── the button bar ─────────────────────────── */
+
+/*
+ * A small cluster in the corner that spends most of its life at a third of
+ * its opacity.  This is the compromise between a preview with no controls and
+ * a preview with a toolbar: the controls are always in the same place, and
+ * they are never the brightest thing on a page of text.
+ */
+.sm-bar {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.25rem 0.6rem 0.25rem 0.25rem;
+  border: 1px solid var(--sm-border);
+  border-radius: 999px;
+  background: var(--sm-surface);
+  box-shadow: 0 2px 12px var(--sm-shadow);
+  backdrop-filter: blur(10px) saturate(1.4);
+  opacity: 0.35;
+  transition: opacity 0.15s ease-out;
+}
+
+.sm-bar:is(:hover, :focus-within) {
+  opacity: 1;
+}
+
+/* The UA sheet's `[hidden] { display: none }` is a plain element rule, and
+   every `display` this sheet sets on a class beats it — so a button the script
+   hides would stay on screen, visible and inert.  Restated here, above
+   everything that could out-specify it. */
+[hidden] {
+  display: none !important;
+}
+
+.sm-btn {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  color: var(--sm-muted);
+  transition: background 0.12s ease-out, color 0.12s ease-out;
+}
+
+.sm-btn:hover {
+  background: var(--sm-accent-fill);
+  color: var(--sm-text);
+}
+
+/* A toggle that is on has to be readable at a glance from across the
+   page — the buttons are small and the bar is faint. */
+.sm-btn[aria-pressed="true"] {
+  background: var(--sm-accent-fill);
+  color: var(--sm-accent);
+}
+
+.sm-btn svg {
+  display: block;
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: currentColor;
+}
+
+/* Escape hatch for stroked icons, whose `fill="none"` would otherwise lose to
+   the rule above and fill the outline solid. */
+.sm-btn svg[fill="none"] {
+  fill: none;
+  stroke: currentColor;
+}
+
+/*
+ * The dot is the whole connection status UI.  Green is live, amber is trying,
+ * grey is gone — three states nobody has to read a label to understand, in a
+ * corner that is otherwise ignorable.
+ */
+.sm-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sm-ok);
+  flex: none;
+}
+
+.sm-dot.sm-reconnecting {
+  background: var(--sm-warn);
+}
+
+.sm-dot.sm-dead {
+  background: var(--sm-muted);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Only the reconnecting state moves: a pulse says "still trying" without
+     any text, and a steady dot says everything is fine. */
+  .sm-dot.sm-reconnecting {
+    animation: sm-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes sm-pulse {
+    50% {
+      opacity: 0.3;
+      transform: scale(0.8);
+    }
+  }
+}
+
+/* ─────────────────────────── contents rail ─────────────────────────── */
+
+/*
+ * A fixed rail rather than a floating panel: it scrolls on its own, so a
+ * hundred-heading document stays navigable without moving the page.  It is
+ * shown by removing the `hidden` attribute, so the display rule has to be
+ * keyed off that attribute and not off a class.
+ */
+.sm-toc {
+  position: fixed;
+  inset-block: 0;
+  inset-inline-start: 0;
+  z-index: 20;
+  /* On a phone the rail is wider than the reading area; capping it keeps a
+     strip of the document visible, so it still reads as an overlay over
+     something rather than as a page of its own. */
+  width: min(var(--sm-toc-width), 80vw);
+  padding: 2rem 0.75rem 4rem;
+  overflow-y: auto;
+  /* Scrolling past the end of the rail must not start scrolling the page. */
+  overscroll-behavior: contain;
+  background: var(--sm-fill);
+  border-inline-end: 1px solid var(--sm-border);
+}
+
+.sm-toc[hidden] {
+  display: none;
+}
+
+#sm-toc-list a {
+  display: block;
+  padding: 0.2rem 0.5rem;
+  border-left: 2px solid transparent;
+  border-radius: 0 4px 4px 0;
+  color: var(--sm-muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  text-decoration: none;
+}
+
+#sm-toc-list a:hover {
+  color: var(--sm-text);
+  background: var(--sm-stripe);
+}
+
+/*
+ * Depth is accepted in either notation — a `data-level` attribute or an
+ * `sm-toc-l*` class — so preview.js can build the nav whichever way reads
+ * better there without a round trip to this file.
+ */
+#sm-toc-list a[data-level="1"],
+#sm-toc-list a.sm-toc-l1 {
+  padding-left: 0.5rem;
+  font-weight: 600;
+}
+
+#sm-toc-list a[data-level="2"],
+#sm-toc-list a.sm-toc-l2 {
+  padding-left: 1.25rem;
+}
+
+#sm-toc-list a[data-level="3"],
+#sm-toc-list a.sm-toc-l3 {
+  padding-left: 2rem;
+}
+
+#sm-toc-list a[data-level="4"],
+#sm-toc-list a.sm-toc-l4 {
+  padding-left: 2.75rem;
+}
+
+#sm-toc-list a[data-level="5"],
+#sm-toc-list a.sm-toc-l5 {
+  padding-left: 3.5rem;
+}
+
+#sm-toc-list a[data-level="6"],
+#sm-toc-list a.sm-toc-l6 {
+  padding-left: 4.25rem;
+}
+
+/* Where you are, in the accent colour and with the bar that the indent rules
+   left room for. */
+#sm-toc-list a.sm-toc-here {
+  color: var(--sm-accent-ink, var(--sm-accent));
+  border-left-color: var(--sm-accent);
+  background: var(--sm-accent-fill);
+  font-weight: 600;
+}
+
+/*
+ * Wide enough to afford it, the column steps aside for the rail; below that
+ * the rail covers the text instead.  Narrowing an already-narrow measure to
+ * make room is the worse trade — the text becomes unreadable while the rail is
+ * open, and the rail is meant to be opened, glanced at and closed.
+ */
+@media (min-width: 1100px) {
+  body.sm-toc-open #sm-main {
+    padding-inline-start: var(--sm-toc-width);
+  }
+}
+
+@media (max-width: 1099px) {
+  .sm-toc {
+    box-shadow: 0 0 2rem var(--sm-shadow);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #sm-main {
+    transition: padding 0.2s ease-out;
+  }
+}
+
+/* ─────────────────────────── cursor flash ─────────────────────────── */
+
+/*
+ * Where the editor's cursor is.  It has to be findable the instant it appears
+ * and gone by the time you have read the sentence, so it is a tint that fades
+ * out over about a second rather than a persistent marker.
+ *
+ * Without the fade — for a reader who asked for less motion — the flat tint
+ * stays until preview.js drops the class, which is the honest fallback: a
+ * colour change is not motion, but an endlessly repainting one is fatiguing.
+ */
+.sm-flash {
+  border-radius: 4px;
+  background-color: var(--sm-flash);
+  box-shadow: 0 0 0 0.3rem var(--sm-flash);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sm-flash {
+    animation: sm-flash 1.2s ease-out forwards;
+  }
+
+  @keyframes sm-flash {
+    to {
+      background-color: transparent;
+      box-shadow: 0 0 0 0.3rem transparent;
+    }
+  }
+}
+
+/* ─────────────────────────── print ─────────────────────────── */
+
+/*
+ * Both dark blocks are `@media screen`, so paper already gets the light
+ * palette with no work here.  What is left is removing the things that only
+ * make sense on a screen, and making sure nothing is silently cut off: a
+ * clipped code block on paper is a lie about the document.
+ */
+@media print {
+  .sm-bar,
+  .sm-toc {
+    display: none;
+  }
+
+  #sm-main {
+    padding: 0;
+  }
+
+  .sm-body {
+    width: auto;
+    max-width: none;
+  }
+
+  .sm-code pre,
+  .sm-table-wrap,
+  .sm-math-display {
+    overflow: visible;
+  }
+
+  .sm-code pre code {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /* On paper a link is only a colour; the destination has to be written out.
+     Fragment and relative links are skipped — they say nothing off-screen. */
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    color: var(--sm-muted);
+    font-size: 0.85em;
+    word-break: break-all;
+  }
+
+  .sm-anchor,
+  .sm-copy {
+    display: none;
+  }
+
+  /* Where the cursor happened to be when the page was printed is an artefact
+     of the editor, not part of the document. */
+  .sm-flash {
+    background-color: transparent;
+    box-shadow: none;
+  }
+
+  /* Headings that fall at the bottom of a page, and blocks split across two,
+     are the two breaks worth spending page space to avoid. */
+  :is(h1, h2, h3, h4, h5, h6) {
+    break-after: avoid;
+  }
+
+  :is(.sm-code, .sm-table-wrap, blockquote, figure) {
+    break-inside: avoid;
+  }
+}

@@ -48,6 +48,17 @@ test-daemon: build
 			|| { echo "run $$run: $$got replies, want 3 (a reply was lost at exit)"; exit 1; }; \
 	done
 	@echo "daemon: replies survive stdin EOF"
+	@# The browser preview's page is the one thing this daemon emits that no
+	@# other target looks at, and a stylesheet that failed to inline is a page
+	@# that renders as unstyled HTML rather than as an error anybody notices.
+	@page="$$(./target/release/simplemarkdown-daemon --html tests/fixtures/kitchen-sink.md)"; \
+	for want in '<!DOCTYPE html>' '<style>' 'data-line=' 'id="sm-doc"' 'window.SM'; do \
+		case "$$page" in \
+			*"$$want"*) ;; \
+			*) echo "--html produced a page with no $$want"; exit 1;; \
+		esac; \
+	done; \
+	echo "daemon: --html produces a self-contained page"
 	@# The outline, the link table and the block index describe the whole
 	@# document however little of it moved, and on a small patch they are the
 	@# entire reply.  A fresh session must be sent all three; a render that
@@ -218,9 +229,11 @@ test-outline: build
 test-protocol:
 	vim -Nu NONE -n -i NONE -es -S tests/vim_protocol.vim
 
-# The external (browser) preview, against a stand-in for omd: port allocation,
-# one server per buffer, and teardown.  Needs no omd installed.
-test-external:
+# The external (browser) preview.  It talks HTTP to the port the plugin was
+# handed rather than believing the plugin's own table: the table is what the
+# plugin thinks it did, the socket is what it did, and every bug this preview
+# has had lived in the gap.  Needs the daemon, which is now the server.
+test-external: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_external.vim
 
 # Configuration: a `g:` option that does not hold what it says it holds.  Its

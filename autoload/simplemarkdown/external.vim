@@ -6,33 +6,53 @@ vim9script
 # The in-Vim preview and this one answer different questions.  The buffer
 # preview is for reading and navigating a document while you write it, over
 # SSH, in tmux, with the cursors tied together.  This one is for seeing what
-# the document will actually look like: real proportional type, images that
-# are images, and LaTeX that is typeset rather than shown as source.
+# the document will actually look like: real proportional type, images that are
+# images, a heading that is a heading rather than a row of `#`.
 #
-# It is deliberately a thin supervisor around `omd`, an external binary the
-# user installs themselves.  Nothing here is linked into simplemarkdown-daemon:
-# omd pulls in a web server, a file watcher and a clipboard stack, and none of
-# that belongs in a process whose whole job is to lay out rows of text.
+# It used to be a thin supervisor around `omd`, an external binary the user
+# installed themselves.  That was the right shape until the day someone wanted
+# the page to look different: omd's stylesheet is `include_str!`d into its
+# binary, so the whole appearance of this plugin's browser preview — the font,
+# the colours, whether it followed the system's light or dark setting — was a
+# decision another project had made and this one could not revisit.  A preview
+# you cannot restyle is not a preview you own.
 #
-# One omd server per source buffer, each on its own port.  omd watches the file
-# on disk with notify(7) and pushes a reload over SSE, so the browser follows
-# `:w` — not every keystroke.  That is the trade for not having to keep a
-# shadow copy of the buffer on disk.
+# So the daemon renders the HTML and serves it now, and this file is what it
+# always was minus the process supervision: it opens a preview, keeps it fed
+# with the buffer, ties the two cursors together and takes it down again.  The
+# server lives in the daemon we were already running, which is also what makes
+# the page follow the buffer rather than the file — omd watched the file with
+# notify(7) and could only ever reload on `:w`.
+#
+# One server per source buffer, each on its own port, all of them stopped when
+# Vim exits.
 # =============================================================================
 
-# Where a probe — and the browser this plugin opens — has to go when omd was
-# asked to bind a wildcard address.  Not the default for
-# |g:simplemarkdown_omd_host|: since the settings table exists, every default
-# is declared there and nowhere else.
-const LOOPBACK = '127.0.0.1'
-# How far above the configured port to look for a free one before giving up.
+# How far above the configured port the daemon looks for a free one.  Passed
+# rather than searched here: the process that binds the socket is the only one
+# whose answer cannot be stale by the time it is used.
 const PORT_ATTEMPTS = 24
-# A server that dies this fast never bound its port; report its stderr rather
-# than leaving a dead entry that looks live.
-const STARTUP_GRACE_MS = 1500
+# A `serve` costs a render of the whole document before it can answer, so it is
+# given more room than an ordinary request.
+const OPEN_TIMEOUT_MS = 8000
+# Holding `j` moves the cursor faster than a browser can animate a scroll to
+# each line it passes through.  One message per this many milliseconds, with the
+# last position always sent, is smooth at the far end and still lands within a
+# frame of the key being released.
+const CURSOR_THROTTLE_MS = 60
+# How long a scroll the *page* asked for suppresses the cursor messages this
+# side would otherwise answer it with.  Without it the two ends chase each
+# other: the browser reports a line, Vim moves to it, CursorMoved reports it
+# back, and the page scrolls again.
+const SYNC_BACK_QUIET_MS = 400
 
 # source bufnr (as a string) -> preview
 var previews: dict<any> = {}
+# Buffers whose `serve` is still in flight.  Opening one takes a render of the
+# whole document before the daemon can answer, which is long enough for a user
+# to press the key twice — and the second one, with nothing in `previews` yet to
+# stop it, would start a second server this side could never name again.
+var opening: dict<bool> = {}
 
 def Log(message: string)
   simplemarkdown#core#Log('external: ' .. message)
@@ -43,6 +63,11 @@ def Warn(message: string)
   echohl WarningMsg
   echom '[SimpleMarkdown] ' .. message
   echohl None
+enddef
+
+
+def Now(): number
+  return float2nr(reltimefloat(reltime()) * 1000)
 enddef
 
 # ─────────────────────────── the browser ───────────────────────────
@@ -70,104 +95,64 @@ export def Browse(url: string): bool
   return false
 enddef
 
-# ─────────────────────────── the omd binary ───────────────────────────
+# ─────────────────────────── the page ───────────────────────────
 
-export def Executable(): string
-  # Typed rather than checked: the settings table has already guaranteed a
-  # string here, which is the point of asking it rather than g: directly.
-  var configured: string = simplemarkdown#Setting('simplemarkdown_omd_path')
-  if configured !=# ''
-    return executable(configured) ? exepath(configured) : ''
-  endif
-  if executable('omd')
-    return exepath('omd')
-  endif
-  # `cargo install` puts binaries here, and a Vim started from a desktop
-  # session frequently has not sourced the profile that adds it to $PATH.
-  for candidate in [expand('~/.cargo/bin/omd'), expand('~/.cargo/bin/omd.exe')]
-    if executable(candidate)
-      return candidate
-    endif
-  endfor
-  return ''
-enddef
-
-
-def RequireExecutable(): string
-  var exe = Executable()
-  if exe ==# ''
-    Warn('omd not found. Install it with `cargo install omd`, or set g:simplemarkdown_omd_path.')
-  endif
-  return exe
-enddef
-
-# ─────────────────────────── ports ───────────────────────────
-
-# A wildcard bind is reachable on the loopback address, and that is where a
-# probe — and the browser this plugin opens — has to go.
-def ConnectHost(host: string): string
-  return host ==# '0.0.0.0' || host ==# '::' ? LOOPBACK : host
-enddef
-
-
-def PortIsFree(host: string, port: number): bool
-  var channel: channel
-  try
-    channel = ch_open(printf('%s:%d', ConnectHost(host), port), {waittime: 50, timeout: 50})
-  catch
-    # Refused: nothing is listening, which is exactly what we want.
-    return true
-  endtry
-  if ch_status(channel) ==# 'open'
-    ch_close(channel)
-    return false
-  endif
-  return true
-enddef
-
-
-# The port a *previous* omd of ours is on is not free, but it is also not a
-# port we should skip silently — Claim() only ever runs when we are starting a
-# new server, and one of ours still holding a port means that buffer is already
-# being previewed.
-def Claim(host: string, base: number): number
-  for offset in range(PORT_ATTEMPTS)
-    var port = base + offset
-    if port > 65535
-      break
-    endif
-    if PortIsFree(host, port)
-      return port
-    endif
-  endfor
-  return 0
+# Everything about the page that is a user's choice rather than the document's.
+# Sent whole on `serve` and on `html`, and not again: an update carries the
+# document, and re-declaring the theme on every keystroke would be JSON the
+# daemon parses for nothing.
+def PageOptions(): dict<any>
+  return {
+    syntax: simplemarkdown#Setting('simplemarkdown_syntax') ? true : false,
+    frontmatter: simplemarkdown#Setting('simplemarkdown_frontmatter') ? true : false,
+    theme: simplemarkdown#Setting('simplemarkdown_browser_theme'),
+    math: simplemarkdown#Setting('simplemarkdown_browser_math'),
+    math_url: simplemarkdown#Setting('simplemarkdown_browser_math_url'),
+    max_width: simplemarkdown#Setting('simplemarkdown_browser_max_width'),
+    live: simplemarkdown#Setting('simplemarkdown_browser_live') ? true : false,
+    follow: simplemarkdown#Setting('simplemarkdown_browser_sync') ? true : false,
+    sync_back: simplemarkdown#Setting('simplemarkdown_browser_sync_back') ? true : false,
+  }
 enddef
 
 # ─────────────────────────── sessions ───────────────────────────
 
-def Alive(preview: dict<any>): bool
-  return get(preview, 'job', null_job) != null_job
-    && job_status(preview.job) ==# 'run'
+def SessionKey(bufnr: number): string
+  return 'external:' .. bufnr
 enddef
 
 
 def Prune()
-  for [key, preview] in items(previews)
-    if !Alive(preview) || !bufexists(str2nr(key))
+  for key in keys(previews)
+    if !bufexists(str2nr(key))
       Discard(key)
     endif
   endfor
 enddef
 
 
-def Discard(key: string)
+# Drop what this side is holding for a preview.  Split out of Discard()
+# because the daemon has two ways of being told — one session, or all of them —
+# and because a daemon that has already exited has to be forgotten without
+# being told anything at all.
+def Forget(key: string): dict<any>
   if !has_key(previews, key)
-    return
+    return {}
   endif
-  var preview = previews[key]
-  previews->remove(key)
-  if get(preview, 'job', null_job) != null_job && job_status(preview.job) ==# 'run'
-    job_stop(preview.job, 'term')
+  var preview = previews->remove(key)
+  for name in ['timer', 'cursor_timer']
+    if get(preview, name, 0) > 0
+      timer_stop(preview[name])
+    endif
+  endfor
+  return preview
+enddef
+
+
+def Discard(key: string)
+  var preview = Forget(key)
+  if !empty(preview)
+    simplemarkdown#core#Send({type: 'serve_stop', session: preview.session})
   endif
 enddef
 
@@ -185,6 +170,33 @@ def Describe(bufnr: number): string
   return fnamemodify(bufname(bufnr), ':t') ?? '[No Name]'
 enddef
 
+
+def PreviewFor(session: string): dict<any>
+  for preview in values(previews)
+    if preview.session ==# session
+      return preview
+    endif
+  endfor
+  return {}
+enddef
+
+
+# The daemon, started the way the in-Vim preview starts it, and refused with
+# the same explanation when the binary is older than this plugin.  A skew shows
+# up here as a `serve` the daemon answers with an error from inside a callback,
+# which is a poor place to read one.
+def Ready(): bool
+  if !simplemarkdown#EnsureDaemon()
+    return false
+  endif
+  var skew = simplemarkdown#DaemonSkew()
+  if skew !=# ''
+    Warn(skew)
+    return false
+  endif
+  return true
+enddef
+
 # ─────────────────────────── commands ───────────────────────────
 
 export def Open()
@@ -198,102 +210,93 @@ export def Open()
     Browse(previews[key].url)
     return
   endif
+  if has_key(opening, key)
+    echo '[SimpleMarkdown] the browser preview for this buffer is still starting.'
+    return
+  endif
 
   var path = fnamemodify(bufname(bufnr), ':p')
-  if path ==# '' || !filereadable(path)
-    Warn('omd previews a file on disk; write this buffer first.')
+  if path ==# ''
+    # The buffer's own text is what gets served, so an unwritten one is fine —
+    # but a document with no path has no directory to resolve `![](./x.png)`
+    # against and no name to put in the title bar, and inventing one would put
+    # the preview somewhere the user cannot predict.
+    Warn('the browser preview needs a named buffer; :file or :w it first.')
     return
   endif
 
-  var exe = RequireExecutable()
-  if exe ==# ''
+  if !Ready()
     return
   endif
 
-  var host: string = simplemarkdown#Setting('simplemarkdown_omd_host')
-  var base: number = simplemarkdown#Setting('simplemarkdown_omd_port')
-  var port = Claim(host, base)
-  if port == 0
-    Warn(printf('no free port in %d-%d; set g:simplemarkdown_omd_port.',
-      base, base + PORT_ATTEMPTS - 1))
-    return
-  endif
+  var host: string = simplemarkdown#Setting('simplemarkdown_browser_host')
+  var base: number = simplemarkdown#Setting('simplemarkdown_browser_port')
+  var session = SessionKey(bufnr)
 
-  var extra: list<string> = simplemarkdown#Setting('simplemarkdown_omd_args')
-  var argv = [exe, '--host', host, '--port', string(port)] + extra + [path]
-  var url = printf('http://%s:%d', ConnectHost(host), port)
-  var errors: list<string> = []
-
-  var job = job_start(argv, {
-    in_io: 'null',
-    out_io: 'pipe',
-    err_io: 'pipe',
-    out_cb: (_, message) => {
-      Log('omd: ' .. message)
-    },
-    err_cb: (_, message) => {
-      add(errors, message)
-      Log('omd!: ' .. message)
-    },
-    exit_cb: (_, code) => {
-      OnExit(key, code, errors)
-    },
-  })
-  if job_status(job) !=# 'run'
-    Warn('could not start omd: ' .. join(argv))
-    return
-  endif
-
-  previews[key] = {
-    job: job,
-    bufnr: bufnr,
+  opening[key] = true
+  var sent = simplemarkdown#core#Request({
+    type: 'serve',
+    session: session,
     path: path,
+    lines: getbufline(bufnr, 1, '$'),
     host: host,
-    port: port,
-    url: url,
-    started_ms: Now(),
-  }
-  Log(printf('omd serving %s on %s', path, url))
+    port: base,
+    attempts: PORT_ATTEMPTS,
+    page: PageOptions(),
+  }, (reply) => OnServed(bufnr, path, session, reply), OPEN_TIMEOUT_MS)
 
-  if simplemarkdown#Setting('simplemarkdown_omd_browser')
-    # omd binds its socket before it prints anything, but the browser is a
-    # separate process racing it; a short beat is cheaper than a 'connection
-    # refused' page the user then has to reload by hand.
-    var delay: number = simplemarkdown#Setting('simplemarkdown_omd_browser_delay')
-    timer_start(delay, (_) => {
-      if has_key(previews, key)
-        Browse(url)
-      endif
-    })
-  else
-    echo printf('[SimpleMarkdown] omd serving %s at %s', Describe(bufnr), url)
-  endif
-
-  if &modified
-    echohl WarningMsg
-    echom '[SimpleMarkdown] the buffer has unwritten changes; omd reloads on :w.'
-    echohl None
+  if sent == 0
+    opening->remove(key)
+    Warn('could not ask the daemon to serve this buffer.')
   endif
 enddef
 
 
-def OnExit(key: string, code: number, errors: list<string>)
-  var known = has_key(previews, key)
-  var young = known && Now() - previews[key].started_ms < STARTUP_GRACE_MS
-  if known
-    previews->remove(key)
-  endif
-  if code == 0 || !known
+def OnServed(bufnr: number, path: string, session: string, reply: dict<any>)
+  opening->remove(string(bufnr))
+
+  if get(reply, '_failed', false) || get(reply, 'type', '') !=# 'serve_result'
+    # A timeout is the dangerous one: the request was not withdrawn, so the
+    # daemon may bind the port a moment after we have given up, and a server
+    # nothing on this side knows about is a port held until Vim exits.  Saying
+    # stop costs one line and covers both that and the case where it never
+    # started.
+    simplemarkdown#core#Send({type: 'serve_stop', session: session})
+    # A daemon too old to serve answers a request type it has never heard of
+    # with an error, from inside this callback, which is a poor place to read
+    # one — so it is translated here into the sentence that says what to do.
+    var detail = simplemarkdown#core#Ready() && !simplemarkdown#core#HasCap('serve')
+      ? simplemarkdown#DaemonSkew()
+      : get(reply, 'message', 'no answer from the daemon')
+    Warn('browser preview failed: ' .. detail)
     return
   endif
-  # An immediate non-zero exit is a real failure the user has to see — a port
-  # that was taken between the probe and the bind, an unreadable file.  A late
-  # one is usually the server being killed with the editor.
-  var detail = empty(errors) ? printf('exit code %d', code) : trim(errors[-1])
-  if young
-    Warn('omd failed to start: ' .. detail)
+  if !bufexists(bufnr)
+    # The buffer went away while the port was being bound; nothing is going to
+    # feed this server, so it must not be left holding the port.
+    simplemarkdown#core#Send({type: 'serve_stop', session: session})
+    return
+  endif
+
+  var url: string = get(reply, 'url', '')
+  previews[string(bufnr)] = {
+    bufnr: bufnr,
+    path: path,
+    session: session,
+    url: url,
+    port: get(reply, 'port', 0),
+    timer: 0,
+    last_line: 0,
+    cursor_sent_ms: 0,
+    cursor_timer: 0,
+    quiet_until_ms: 0,
+  }
+  Log(printf('serving %s at %s', path, url))
+
+  if simplemarkdown#Setting('simplemarkdown_browser')
+    Browse(url)
   else
-    Log(printf('omd exited: %s', detail))
+    echo printf('[SimpleMarkdown] serving %s at %s', Describe(bufnr), url)
   endif
 enddef
 
@@ -301,14 +304,12 @@ enddef
 export def Close(all: bool = false)
   Prune()
   if all
-    for key in keys(previews)
-      Discard(key)
-    endfor
+    StopAll()
     return
   endif
   var key = string(TargetBuffer())
   if !has_key(previews, key)
-    Warn('no omd preview for this buffer.')
+    Warn('no browser preview for this buffer.')
     return
   endif
   Discard(key)
@@ -327,44 +328,240 @@ enddef
 
 # One-shot: render to a temporary HTML file and hand it to the browser.  No
 # server, no live reload, nothing left running — the right shape for "let me
-# look at this once" and for a machine where a listening socket is awkward.
+# look at this once", for a machine where a listening socket is awkward, and
+# for a page you want to keep or send to someone.  The daemon hands the page
+# back rather than writing it: a process that lays out documents and a process
+# that creates files beside them are different blast radii.
 export def Static()
   var bufnr = TargetBuffer()
   var path = fnamemodify(bufname(bufnr), ':p')
-  if path ==# '' || !filereadable(path)
-    Warn('omd previews a file on disk; write this buffer first.')
+  if path ==# ''
+    Warn('the browser preview needs a named buffer; :file or :w it first.')
     return
   endif
-  var exe = RequireExecutable()
-  if exe ==# ''
+  if !Ready()
     return
   endif
-  var errors: list<string> = []
-  var extra: list<string> = simplemarkdown#Setting('simplemarkdown_omd_args')
-  var job = job_start([exe, '--static-mode'] + extra + [path], {
-    in_io: 'null',
-    err_cb: (_, message) => {
-      add(errors, message)
-    },
-    exit_cb: (_, code) => {
-      if code != 0
-        Warn('omd --static-mode failed: '
-          .. (empty(errors) ? printf('exit code %d', code) : trim(errors[-1])))
-      endif
-    },
-  })
-  if job_status(job) !=# 'run'
-    Warn('could not start omd.')
+
+  var page = PageOptions()
+  # Nothing is listening: a page written to a file must not spend its life
+  # reconnecting to an event stream that was never there.
+  page.live = false
+  page.sync_back = false
+
+  var sent = simplemarkdown#core#Request({
+    type: 'html',
+    path: path,
+    lines: getbufline(bufnr, 1, '$'),
+    page: page,
+  }, (reply) => OnStatic(bufnr, reply), OPEN_TIMEOUT_MS)
+
+  if sent == 0
+    Warn('could not ask the daemon for a page.')
   endif
 enddef
 
 
+def OnStatic(bufnr: number, reply: dict<any>)
+  if get(reply, '_failed', false) || get(reply, 'type', '') !=# 'html_result'
+    Warn('static preview failed: ' .. get(reply, 'message', 'no answer from the daemon'))
+    return
+  endif
+  # Named after the document rather than given a random name: a browser tab
+  # titled `simplemarkdown-a7f3.html` tells the reader nothing, and these
+  # accumulate in the temporary directory where a person may have to identify
+  # one later.
+  var stem = fnamemodify(bufname(bufnr), ':t:r')
+  var file = fnamemodify(tempname(), ':h') .. '/'
+    .. (stem ==# '' ? 'markdown' : stem) .. '.html'
+  try
+    writefile(split(get(reply, 'html', ''), "\n", true), file)
+  catch
+    Warn('could not write ' .. file .. ': ' .. v:exception)
+    return
+  endtry
+  Browse(FileUrl(file))
+enddef
+
+
+# A path a browser will take.  `file://` plus a Windows path is not a URL —
+# `C:\Users\...` has backslashes for separators and no leading slash — and a
+# temporary directory is allowed to have a space in it, which ends the URL.
+def FileUrl(path: string): string
+  var slashed = substitute(path, '\\', '/', 'g')
+  var escaped = substitute(slashed, '[ "#%?<>^`{|}]',
+    (m) => printf('%%%02X', char2nr(m[0])), 'g')
+  return 'file://' .. (escaped =~# '^/' ? '' : '/') .. escaped
+enddef
+
+# ─────────────────────────── keeping it fed ───────────────────────────
+
+# The buffer changed.  Debounced with the same option the in-Vim preview uses:
+# a browser repainting a whole document per keystroke is the same waste as a
+# terminal doing it, and the two previews should not disagree about how eager
+# they are.
+export def OnTextChanged(bufnr: number)
+  var key = string(bufnr)
+  if !has_key(previews, key)
+    return
+  endif
+  if !simplemarkdown#Setting('simplemarkdown_browser_live')
+    # Following the file rather than the buffer, which is what the previous
+    # implementation could do and some people prefer: the page then changes
+    # only at moments the author chose.
+    return
+  endif
+  var preview = previews[key]
+  if preview.timer > 0
+    timer_stop(preview.timer)
+  endif
+  var delay: number = simplemarkdown#Setting('simplemarkdown_debounce')
+  preview.timer = timer_start(delay, (_) => Push(key))
+enddef
+
+
+export def OnWritten(bufnr: number)
+  var key = string(bufnr)
+  if !has_key(previews, key)
+    return
+  endif
+  if simplemarkdown#Setting('simplemarkdown_browser_live')
+    # `BufWritePost` is one of the events that already scheduled a push, and a
+    # second render of the same document would only say the same thing.
+    return
+  endif
+  # A write is the one moment a preview that is not following the buffer has
+  # agreed to move.
+  Push(key)
+enddef
+
+
+def Push(key: string)
+  if !has_key(previews, key)
+    return
+  endif
+  var preview = previews[key]
+  preview.timer = 0
+  if !bufexists(preview.bufnr)
+    Discard(key)
+    return
+  endif
+  if !bufloaded(preview.bufnr)
+    # `getbufline()` on an unloaded buffer answers with nothing, and nothing is
+    # a document: the page would go blank and stay blank, since a buffer nobody
+    # loads again never produces another change to undo it.  The preview keeps
+    # showing what it last had, which is what the buffer last said.
+    return
+  endif
+  simplemarkdown#core#Send({
+    type: 'serve_update',
+    session: preview.session,
+    lines: getbufline(preview.bufnr, 1, '$'),
+    # The page is scrolled by the same message that changed it, so a reader
+    # watching the browser while typing at the bottom of a long document does
+    # not have to chase it.  0 leaves the page where they put it.
+    line: FollowLine(preview),
+  })
+enddef
+
+
+def FollowLine(preview: dict<any>): number
+  if !simplemarkdown#Setting('simplemarkdown_browser_sync')
+    return 0
+  endif
+  return preview.bufnr == bufnr('%') ? line('.') : 0
+enddef
+
+# ─────────────────────────── the two cursors ───────────────────────────
+
+export def OnCursorMoved(winid: number)
+  if !simplemarkdown#Setting('simplemarkdown_browser_sync')
+    return
+  endif
+  var key = string(winbufnr(winid))
+  if !has_key(previews, key)
+    return
+  endif
+  var preview = previews[key]
+  var lnum = line('.', winid)
+  if lnum <= 0 || lnum == preview.last_line
+    return
+  endif
+  # A move this side made in answer to the page's own scrolling would be
+  # reported straight back, and the two ends would chase each other down the
+  # document.
+  if Now() < preview.quiet_until_ms
+    preview.last_line = lnum
+    return
+  endif
+  preview.last_line = lnum
+
+  var since = Now() - preview.cursor_sent_ms
+  if since >= CURSOR_THROTTLE_MS
+    SendCursor(key)
+    return
+  endif
+  # Trailing edge: the position at rest is the one that matters, and dropping
+  # it because the last of a run of moves arrived inside the window would leave
+  # the page one line behind wherever the cursor stopped.
+  if preview.cursor_timer == 0
+    preview.cursor_timer = timer_start(CURSOR_THROTTLE_MS - since, (_) => SendCursor(key))
+  endif
+enddef
+
+
+def SendCursor(key: string)
+  if !has_key(previews, key)
+    return
+  endif
+  var preview = previews[key]
+  preview.cursor_timer = 0
+  preview.cursor_sent_ms = Now()
+  simplemarkdown#core#Send({
+    type: 'serve_cursor',
+    session: preview.session,
+    line: preview.last_line,
+  })
+enddef
+
+
+# The reader scrolled the page and asked the editor to follow.  Unsolicited:
+# routed here from the daemon's event stream, not from a reply.
+export def OnScrolled(session: string, lnum: number)
+  if !simplemarkdown#Setting('simplemarkdown_browser_sync_back') || lnum <= 0
+    return
+  endif
+  var preview = PreviewFor(session)
+  if empty(preview) || !bufexists(preview.bufnr)
+    return
+  endif
+  var target = min([lnum, getbufinfo(preview.bufnr)[0].linecount])
+  preview.quiet_until_ms = Now() + SYNC_BACK_QUIET_MS
+  preview.last_line = target
+  # Every window showing the document, and none of them focused: a preview that
+  # steals the cursor out of the buffer you are typing in is a preview you
+  # close.
+  for winid in win_findbuf(preview.bufnr)
+    win_execute(winid, printf('call cursor(%d, 1) | normal! zz', target))
+  endfor
+enddef
+
+# ─────────────────────────── lifecycle ───────────────────────────
+
 # Vim is going away; so should every server we started.  Without this they
-# outlive the editor and hold their ports.
+# outlive the editor and hold their ports — though only until the daemon
+# notices its own stdin has closed, which is the belt to this file's braces.
 export def StopAll()
   for key in keys(previews)
-    Discard(key)
+    Forget(key)
   endfor
+  opening = {}
+  # Sent whether or not this side thought it had anything, and as one message
+  # rather than one per preview.  `:SimpleMarkdownExternalClose!` is reached for
+  # precisely when the two tables have drifted — a server this side has lost
+  # track of is the only kind worth a bang — and it runs from VimLeavePre too,
+  # where what is left of the session is a pipe about to close.
+  simplemarkdown#core#Send({type: 'serve_stop', all: true})
 enddef
 
 
@@ -372,12 +569,21 @@ export def OnBufferWipeout(bufnr: number)
   Discard(string(bufnr))
 enddef
 
-# ─────────────────────────── introspection ───────────────────────────
 
-def Now(): number
-  return float2nr(reltimefloat(reltime()) * 1000)
+# The daemon exited, taking every socket it was holding with it.  The table
+# here would otherwise keep answering "already serving" for URLs that now
+# refuse the connection.
+export def OnDaemonExit()
+  if empty(previews)
+    return
+  endif
+  for key in keys(previews)
+    Forget(key)
+  endfor
+  Log('daemon exited; every browser preview went with it')
 enddef
 
+# ─────────────────────────── introspection ───────────────────────────
 
 export def Status(): list<any>
   Prune()
@@ -395,11 +601,13 @@ enddef
 
 
 export def HealthLines(): list<string>
-  var exe = Executable()
-  var lines = [printf('[%s] omd: %s', exe ==# '' ? 'WARN' : 'OK',
-    exe ==# '' ? 'not installed (cargo install omd)' : exe)]
+  var lines: list<string> = []
+  var served = simplemarkdown#core#HasCap('serve')
+  add(lines, printf('[%s] browser preview: %s', served ? 'OK' : 'WARN',
+    served ? 'served by the daemon'
+      : 'this daemon cannot serve; run ./install.sh, then :SimpleMarkdownRestart'))
   for entry in Status()
-    add(lines, printf('[INFO] external preview: %s -> %s', entry.name, entry.url))
+    add(lines, printf('[INFO] browser preview: %s -> %s', entry.name, entry.url))
   endfor
   return lines
 enddef

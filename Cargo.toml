@@ -18,10 +18,17 @@ path = "src/simplemarkdown/simplemarkdown_daemon.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# "net" is the browser preview's whole dependency: the daemon serves the
+# rendered page from a hand-rolled HTTP/1.1 loop on a TcpListener.  It brings
+# mio, socket2 and libc with it, which is the price of a socket; a web framework
+# would have brought a release schedule.  Shelling out to one — which is what
+# `omd` was — is what this replaced, because a preview whose stylesheet is
+# compiled into somebody else's binary is not a preview this plugin owns.
 tokio = { version = "1", features = [
   "io-std",
   "io-util",
   "macros",
+  "net",
   "rt-multi-thread",
   "sync",
   "time",

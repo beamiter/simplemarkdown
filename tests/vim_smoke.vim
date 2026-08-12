@@ -129,8 +129,17 @@ SimpleMarkdownOpen
 call assert_true(s:PreviewWin() > 0, 'the preview window opens')
 call assert_true(s:Wait('simplemarkdown#core#Ready()', 5000),
       \ 'the daemon completes its handshake')
-call assert_equal(3, simplemarkdown#core#Protocol(), 'protocol v3 is negotiated')
+" Read out of the source that owns it rather than written here as a literal.
+" A number spelled out in a test is a number that stays right for one release:
+" `make check-protocol` has the same rule and the same reason.
+let s:speaks = str2nr(matchstr(join(readfile(s:root .. '/autoload/simplemarkdown.vim'), "\n"),
+      \ 'const PROTOCOL_VERSION = \zs\d\+'))
+call assert_true(s:speaks > 0, 'the plugin declares a protocol version')
+call assert_equal(s:speaks, simplemarkdown#core#Protocol(),
+      \ 'the protocol the plugin speaks is the one that was negotiated')
 call assert_true(simplemarkdown#core#HasCap('render'), 'the render capability is advertised')
+call assert_true(simplemarkdown#core#HasCap('serve'),
+      \ 'the daemon advertises the browser preview')
 call assert_true(simplemarkdown#core#HasCap('incremental'),
       \ 'the daemon advertises incremental renders')
 

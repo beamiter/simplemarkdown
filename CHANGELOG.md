@@ -6,6 +6,49 @@ All notable changes to this project are documented here.  The format follows
 
 ## [Unreleased]
 
+### 浏览器预览:自己渲染,自己伺服
+
+- **浏览器预览不再依赖 `omd`。** daemon 现在自己把文档渲染成 HTML,自己用
+  一个手写的 HTTP/1.1 循环伺服它,更新经 SSE 推给页面。装机不再需要
+  `cargo install omd`;`g:simplemarkdown_omd_*` 六个选项换成
+  `g:simplemarkdown_browser_*`。
+
+  换掉它的理由值得写下来:omd 的样式表是 `include_str!` 进它二进制的,于是本
+  插件浏览器预览的全部外观——字体、配色、跟不跟随系统的亮/暗——都是另一个项目
+  替我们做的决定,而且改不了。**改不了外观的预览不算自己的预览。**代价是
+  tokio 多一个 `net` feature(连带 mio / socket2 / libc 三个传递依赖),
+  没有新的直接依赖,也没有 web 框架。
+
+- **页面跟的是 buffer,不是文件。** omd 用 notify(7) 看磁盘上的文件,所以只能
+  跟着 `:w` 刷新;现在送过去的是 Vim 里的文本,按 `g:simplemarkdown_debounce`
+  去抖,边打边变,连没保存的改动也看得到。`g:simplemarkdown_browser_live` 置 0
+  可以退回旧行为。没存过盘的 buffer 也能预览,只要它有名字——目录用来解析
+  `![](./diagram.png)`,文件名用来当标签页标题。
+
+- **两个光标连着走。** 源文件里移动光标,页面滚到对应的块并短暂高亮它,和两个
+  Vim 窗口之间的联动是同一套语义(`g:simplemarkdown_browser_sync`)。
+  `g:simplemarkdown_browser_sync_back` 打开反向:读页面时滚动,源文件光标跟着走。
+
+- **页面本身。** 一列有节制的正文宽度、中英文同基线的字体栈、GitHub 的亮/暗两套
+  配色(默认 `auto`,跟随系统,页面角上的按钮可以覆盖并记住)、fenced block 里
+  真正的语法配色(仍然是 syntect 解析、CSS 上色,和终端预览同一套 class)、
+  GitHub 的五种 alert、可滚动的表格与代码块、复制按钮、目录侧栏、`t`/`f`/`d`
+  三个快捷键。数学用 KaTeX(`g:simplemarkdown_browser_math`),这是页面上唯一
+  一处外部资源,加载不到时公式以源码形式留在页面上而不是消失。
+
+- **`:SimpleMarkdownExternalStatic` 现在写的是一份自包含的 HTML**:样式表在文件
+  里,没有服务器,也没有会一直重连的事件流。搬走、寄给别人、明年再打开都还是
+  它本来的样子。
+
+- 相对路径引用的图片等文件由服务器从文档所在目录提供,且只从那里提供:URL 里的
+  `../` 一律拒绝(词法与 canonicalize 两道,后者才拦得住软链接)——
+  `g:simplemarkdown_browser_host` 是可以被设成 `0.0.0.0` 的。同理,只有地址字面量
+  和 `localhost` 会被当作合法 `Host` 应答:DNS rebinding 需要一个*名字*,而这个
+  服务器不认名字。
+
+- 协议升到 v4。插件更新后需要 `./install.sh` 重新构建 daemon,否则
+  `:SimpleMarkdownHealth` 会直说 "this daemon cannot serve"。
+
 ### 全套统一
 
 - `.simplecore/` 回来了。10 个仓库里的 supervisor(`autoload/<plugin>/core.vim`

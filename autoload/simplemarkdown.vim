@@ -32,7 +32,7 @@ vim9script
 # rather than redrawing something that is already wrong.
 # =============================================================================
 
-const PROTOCOL_VERSION = 3
+const PROTOCOL_VERSION = 4
 const RENDER_TIMEOUT_MS = 10000
 # Rendering the whole buffer on every keystroke burst is cheap in Rust but not
 # free in JSON; past this the preview only refreshes on write and on demand.
@@ -219,15 +219,31 @@ const SETTINGS: list<dict<any>> = [
   {name: 'simplemarkdown_filetypes', kind: 'strings',
     default: ['markdown', 'markdown.pandoc', 'pandoc', 'rmd', 'vimwiki', 'ghmarkdown']},
   {name: 'simplemarkdown_daemon_path', kind: 'string', default: ''},
-  # ─── the external (browser) preview, served by `omd` ───
-  {name: 'simplemarkdown_omd_path', kind: 'string', default: ''},
-  {name: 'simplemarkdown_omd_host', kind: 'choice', default: '127.0.0.1',
+  # ─── the external (browser) preview, served by the daemon ───
+  {name: 'simplemarkdown_browser', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_browser_host', kind: 'choice', default: '127.0.0.1',
     allowed: ['127.0.0.1', 'localhost', '0.0.0.0', '::']},
   # The first port tried; a busy one moves the search up, it does not fail.
-  {name: 'simplemarkdown_omd_port', kind: 'number', default: 3030, min: 1024, max: 65500},
-  {name: 'simplemarkdown_omd_args', kind: 'strings', default: []},
-  {name: 'simplemarkdown_omd_browser', kind: 'flag', default: 1},
-  {name: 'simplemarkdown_omd_browser_delay', kind: 'number', default: 250, min: 0, max: 5000},
+  {name: 'simplemarkdown_browser_port', kind: 'number', default: 3030, min: 1024, max: 65500},
+  # 'auto' is the honest default: the page then agrees with whatever the reader
+  # has told their system, and changes with it, which no fixed choice can do.
+  {name: 'simplemarkdown_browser_theme', kind: 'choice', default: 'auto',
+    allowed: ['auto', 'light', 'dark']},
+  # Off follows the file rather than the buffer — the page then changes only at
+  # moments the author chose, which is what the omd-backed preview could do.
+  {name: 'simplemarkdown_browser_live', kind: 'flag', default: 1},
+  {name: 'simplemarkdown_browser_sync', kind: 'flag', default: 1},
+  # Off by default because it moves the cursor in a buffer somebody may be
+  # typing in, from a window that does not have focus.
+  {name: 'simplemarkdown_browser_sync_back', kind: 'flag', default: 0},
+  # KaTeX is loaded from a CDN, which is the one thing on the page that is not
+  # served from this machine; 'off' is a page that reaches nowhere at all.
+  {name: 'simplemarkdown_browser_math', kind: 'choice', default: 'katex',
+    allowed: ['off', 'katex', 'mathjax']},
+  {name: 'simplemarkdown_browser_math_url', kind: 'string', default: ''},
+  # Prose is hard to read at 200 columns in a browser for the same reason it is
+  # in a terminal, and a maximised window offers rather more than 200.
+  {name: 'simplemarkdown_browser_max_width', kind: 'number', default: 900, min: 480, max: 2400},
 ]
 
 final SETTING_BY_NAME: dict<dict<any>> = {}
@@ -544,6 +560,7 @@ def SetupCore()
     handshake: {request: {type: 'ping'}, reply_type: 'pong'},
     OnReady: OnDaemonReady,
     OnExit: OnDaemonExit,
+    OnEvent: OnDaemonMessage,
   })
 enddef
 
@@ -568,6 +585,25 @@ def EnsureBackend(): bool
   SetupCore()
   WarnAboutConfigOnce()
   return simplemarkdown#core#Ensure()
+enddef
+
+
+# The browser preview needs the same daemon the in-Vim one does, started the
+# same way: settings synced, supervisor configured, configuration problems
+# reported once.  Exported rather than reimplemented over there, because two
+# ways to start one daemon is one way too many.
+export def EnsureDaemon(): bool
+  return EnsureBackend()
+enddef
+
+
+# What to tell someone whose daemon is older than their plugin, or '' when it
+# is not.  The in-Vim preview says this in its own window; the browser preview
+# has no window to say it in until it has started, which is exactly the thing
+# a skew stops it doing.
+export def DaemonSkew(): string
+  var negotiated = ProtocolMismatch()
+  return negotiated > 0 ? ProtocolMessage(negotiated) : ''
 enddef
 
 
@@ -610,7 +646,21 @@ def OnDaemonReady(protocol: number, caps: dict<any>)
 enddef
 
 
+# Everything the daemon says that is not the answer to something we asked.
+# There is one such message: the browser preview reporting that its reader
+# scrolled.  It cannot be a reply — nobody sent a request the page could be
+# answering — so it arrives here, and the supervisor's id routing steps over it
+# because it carries no id.
+def OnDaemonMessage(msg: dict<any>)
+  if get(msg, 'type', '') ==# 'serve_scrolled'
+    simplemarkdown#external#OnScrolled(get(msg, 'session', ''), get(msg, 'line', 0))
+  endif
+enddef
+
+
 def OnDaemonExit(code: number, restarting: bool)
+  # Every browser preview died with the process that was holding its socket.
+  simplemarkdown#external#OnDaemonExit()
   for key in keys(sessions)
     var session = sessions[key]
     session.pending = false
@@ -1812,12 +1862,21 @@ enddef
 
 export def OnTextChanged(bufnr: number)
   var info = getbufinfo(bufnr)
-  if empty(info) || empty(SessionKeysForSourceBuffer(bufnr))
+  if empty(info)
     return
   endif
   if info[0].linecount > HUGE_BUFFER_LINES && mode() =~# '^[iR]'
-    # Live rendering a novel on every keystroke is not a service to anybody;
-    # the write and :SimpleMarkdownRefresh paths still work.
+    # Live rendering a novel on every keystroke is not a service to anybody —
+    # to a preview window or to a browser, and the cost that matters is the
+    # same one either way: this buffer, encoded as JSON, on the main thread.
+    # The write and :SimpleMarkdownRefresh paths still work.
+    return
+  endif
+  # Before the in-Vim preview's own check: the two previews are independent,
+  # and a browser preview open on a buffer with no preview window is an
+  # ordinary thing to want.
+  simplemarkdown#external#OnTextChanged(bufnr)
+  if empty(SessionKeysForSourceBuffer(bufnr))
     return
   endif
   ScheduleSourceSessions(bufnr)
@@ -1829,6 +1888,9 @@ enddef
 # the list is filled, nothing is opened and nothing is echoed — because a
 # command that grabs the screen on every `:w` is one people stop saving with.
 export def OnWritten(bufnr: number)
+  # A preview that is not following the buffer follows the write instead, so
+  # this happens whatever the linter is set to.
+  simplemarkdown#external#OnWritten(bufnr)
   if !Setting('simplemarkdown_lint_on_write')
     return
   endif
@@ -1840,6 +1902,7 @@ enddef
 
 
 export def OnCursorMoved(winid: number)
+  simplemarkdown#external#OnCursorMoved(winid)
   PruneSessions()
   var preview = SessionForPreviewWindow(winid)
   if preview !=# ''

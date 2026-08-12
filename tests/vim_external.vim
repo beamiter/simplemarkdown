@@ -1,171 +1,166 @@
-" The external (browser) preview: process supervision, port allocation and
-" teardown, against a stand-in for omd.
+" The external (browser) preview, against the real daemon: serving a buffer,
+" following it as it changes, one server per buffer, and teardown.
 "
-" Nothing here touches the daemon or the preview window — the two previews are
-" independent by construction, and this test is what keeps them that way.
+" It talks HTTP to the port the plugin was handed rather than believing the
+" plugin's own table.  The table is what the plugin thinks it did; the socket is
+" what it did — and every bug this preview has ever had lived in the gap.
 "
 " Run:  vim -Nu NONE -n -i NONE -es -S tests/vim_external.vim
 
 set nocompatible
 set nomore
 set shortmess+=I
+" One preview per buffer is the thing being tested, and a buffer with unwritten
+" changes cannot be left behind without this.
+set hidden
 
 let s:root = fnamemodify(expand('<sfile>:p'), ':h:h')
 execute 'set runtimepath^=' .. fnameescape(s:root)
 
-let g:simplemarkdown_omd_path = s:root .. '/tests/fake_omd.py'
 " The browser is the one part that cannot be asserted on; opening a real one
 " from a test would be a nuisance rather than a check.
-let g:simplemarkdown_omd_browser = 0
-let g:simplemarkdown_omd_port = 34117
+let g:simplemarkdown_browser = 0
+let g:simplemarkdown_browser_port = 34117
+let g:simplemarkdown_browser_math = 'off'
+let g:simplemarkdown_debounce = 20
 let g:simplemarkdown_auto_open = 0
-let $FAKE_OMD_LOG = tempname()
+let s:debug = s:root .. '/target/debug/simplemarkdown-daemon'
+let s:release = s:root .. '/target/release/simplemarkdown-daemon'
+let g:simplemarkdown_daemon_path =
+      \ getftime(s:debug) > getftime(s:release) ? s:debug : s:release
 runtime plugin/simplemarkdown.vim
 
+let s:tmp = tempname()
+call mkdir(s:tmp, 'p')
+
+function! s:Ok(condition, what) abort
+  call assert_true(a:condition, a:what)
+endfunction
+
 function! s:Wait(expr, ms) abort
-  let l:i = 0
-  while l:i < a:ms / 10
+  let l:waited = 0
+  while l:waited < a:ms
     if eval(a:expr)
       return 1
     endif
-    sleep 10m
-    let l:i += 1
+    sleep 20m
+    let l:waited += 20
   endwhile
   return eval(a:expr)
 endfunction
 
-function! s:Calls() abort
-  return filereadable($FAKE_OMD_LOG) ? readfile($FAKE_OMD_LOG) : []
+" One HTTP GET.  Spoken by python3 rather than by Vim's raw channel: a client
+" that has to decide for itself when the response has ended is a second thing
+" the test can hang on, and the thing under test is the server.
+function! s:Get(port, path) abort
+  let l:code = 'import sys,urllib.request,urllib.error' ..
+        \ "\nurl='http://127.0.0.1:" .. a:port .. a:path .. "'" ..
+        \ "\ntry:" ..
+        \ "\n r=urllib.request.urlopen(url,timeout=5)" ..
+        \ "\n sys.stdout.write(str(r.status)+chr(10)+r.read().decode('utf-8','replace'))" ..
+        \ "\nexcept urllib.error.HTTPError as e:" ..
+        \ "\n sys.stdout.write(str(e.code)+chr(10))" ..
+        \ "\nexcept Exception:" ..
+        \ "\n sys.stdout.write('0'+chr(10))"
+  return system(['python3', '-c', l:code])
 endfunction
 
-" ------------------------------------------------------------------ setup ---
+" Nothing is listening on this port any more.
+function! s:Refused(port) abort
+  let l:code = 'import socket,sys' ..
+        \ "\ns=socket.socket()" ..
+        \ "\ns.settimeout(1)" ..
+        \ "\nsys.stdout.write('1' if s.connect_ex(('127.0.0.1'," .. a:port .. ")) else '0')"
+  return system(['python3', '-c', l:code]) ==# '1'
+endfunction
 
-call assert_true(executable(g:simplemarkdown_omd_path),
-      \ 'the fake omd is executable: chmod +x tests/fake_omd.py')
+function! s:Status() abort
+  return simplemarkdown#external#Status()
+endfunction
 
-for s:name in ['SimpleMarkdownExternal', 'SimpleMarkdownExternalOpen',
-      \ 'SimpleMarkdownExternalClose', 'SimpleMarkdownExternalStatic']
-  call assert_equal(2, exists(':' .. s:name), s:name .. ' is defined')
-endfor
+" ── one buffer, served ──────────────────────────────────────────────────────
 
-call assert_equal(g:simplemarkdown_omd_path, simplemarkdown#external#Executable(),
-      \ 'an explicit path wins over $PATH')
-
-" ------------------------------------------------- an unwritten buffer ---
-
-" omd watches a file on disk.  A buffer that has never been written has no
-" path to watch, and starting a server for it would serve nothing.
-enew
-setlocal filetype=markdown
-call simplemarkdown#external#Open()
-call assert_equal([], simplemarkdown#external#Status(),
-      \ 'a nameless buffer starts no server')
-
-" --------------------------------------------------------------- serving ---
-
-let s:first = tempname() .. '.md'
-call writefile(['# first'], s:first)
-execute 'edit ' .. fnameescape(s:first)
-setlocal filetype=markdown
-let s:first_buf = bufnr('%')
+let s:doc = s:tmp .. '/note.md'
+call writefile(['# Kettle', '', 'A paragraph about kettles.'], s:doc)
+execute 'edit ' .. fnameescape(s:doc)
+setfiletype markdown
 
 SimpleMarkdownExternalOpen
-call assert_true(s:Wait('len(simplemarkdown#external#Status()) == 1', 3000),
-      \ 'a server is registered for the buffer')
+call s:Ok(s:Wait('len(s:Status()) == 1', 8000), 'a preview is registered for the buffer')
 
-let s:status = simplemarkdown#external#Status()[0]
-call assert_equal(s:first_buf, s:status.bufnr, 'the server is tied to the source buffer')
-call assert_equal(s:first, s:status.path, 'omd is pointed at the file on disk')
-call assert_equal(printf('http://127.0.0.1:%d', g:simplemarkdown_omd_port), s:status.url,
-      \ 'the first server takes the configured port')
+let s:entry = s:Status()[0]
+let s:port = str2nr(matchstr(s:entry.url, ':\zs\d\+'))
+call s:Ok(s:port >= 34117, 'the URL carries the port that was asked for: ' .. s:entry.url)
 
-" The port must actually be listening — the whole point of the supervisor is
-" that the URL it hands out works.
-call assert_true(s:Wait('ch_status(ch_open("127.0.0.1:' .. g:simplemarkdown_omd_port
-      \ .. '", {"waittime": 200})) ==# "open"', 3000),
-      \ 'the advertised port accepts connections')
+let s:page = s:Get(s:port, '/')
+call s:Ok(s:page =~# '^200\n', 'GET / is answered 200')
+call s:Ok(s:page =~# 'Kettle', 'the page carries the heading')
+call s:Ok(s:page =~# 'data-line=', 'blocks carry their source line, for scroll sync')
+call s:Ok(s:page =~# '<style>', 'the page carries its own stylesheet')
+call s:Ok(s:page !~# 'cdn\.jsdelivr', 'with maths off the page reaches nowhere')
 
-" Asking again is a request to look at it, not to start a second one.
+" ── following the buffer, not the file ──────────────────────────────────────
+
+call setline(3, 'A paragraph about teapots.')
+" What the autocommand does, called the way the rest of the suite calls it.
+call simplemarkdown#OnTextChanged(bufnr('%'))
+" Written nowhere: the point is that the served page has moved even though the
+" file on disk still says kettles.
+call s:Ok(s:Wait('s:Get(' .. s:port .. ', "/") =~# "teapots"', 4000),
+      \ 'an unwritten change reaches the page')
+call s:Ok(readfile(s:doc)[2] =~# 'kettles', 'and the file on disk was not touched')
+
+" ── one server per buffer ───────────────────────────────────────────────────
+
+let s:other = s:tmp .. '/other.md'
+call writefile(['# Other', '', 'Second document.'], s:other)
+execute 'edit ' .. fnameescape(s:other)
+setfiletype markdown
 SimpleMarkdownExternalOpen
-call assert_equal(1, len(simplemarkdown#external#Status()),
-      \ 'reopening does not start a second server')
+call s:Ok(s:Wait('len(s:Status()) == 2', 8000), 'a second buffer gets a second server')
 
-" ------------------------------------------------------ a second document ---
+let s:ports = map(copy(s:Status()), {_, e -> matchstr(e.url, ':\zs\d\+')})
+call s:Ok(len(uniq(sort(copy(s:ports)))) == 2, 'the two servers are on different ports')
 
-" Two buffers previewed at once must not collide: the second has to find the
-" next free port on its own.
-let s:second = tempname() .. '.md'
-call writefile(['# second'], s:second)
-execute 'edit ' .. fnameescape(s:second)
-setlocal filetype=markdown
+" ── teardown ────────────────────────────────────────────────────────────────
 
-SimpleMarkdownExternalOpen
-call assert_true(s:Wait('len(simplemarkdown#external#Status()) == 2', 3000),
-      \ 'the second buffer gets its own server')
-let s:ports = map(copy(simplemarkdown#external#Status()), {_, v -> v.url})
-call assert_equal(2, len(uniq(sort(copy(s:ports)))), 'the two servers are on different ports: '
-      \ .. string(s:ports))
+SimpleMarkdownExternalClose
+call s:Ok(s:Wait('len(s:Status()) == 1', 4000), 'closing this buffer leaves the other alone')
 
-" ---------------------------------------------------------------- health ---
+SimpleMarkdownExternalClose!
+call s:Ok(s:Wait('empty(s:Status())', 4000), 'the bang stops every server')
+call s:Ok(s:Wait('s:Refused(' .. s:port .. ')', 4000), 'and the port is free again')
 
-let s:health = join(simplemarkdown#external#HealthLines(), "\n")
-call assert_true(s:health =~# '\[OK\] omd:', 'health reports the omd binary')
-call assert_true(s:health =~# 'external preview:', 'health lists the live servers')
-call assert_true(has_key(simplemarkdown#DebugStatus(), 'external'),
-      \ 'the debug dump carries the external state')
+" ── the static page ─────────────────────────────────────────────────────────
 
-" ----------------------------------------------------------- static mode ---
+execute 'edit ' .. fnameescape(s:doc)
+setfiletype markdown
+let g:simplemarkdown_static_opened = ''
+" Browse() is the last thing Static() does and the only thing that would open a
+" window; overriding it is how the file it wrote becomes readable from here.
+function! simplemarkdown#external#Browse(url) abort
+  let g:simplemarkdown_static_opened = a:url
+  return 1
+endfunction
 
 SimpleMarkdownExternalStatic
-call assert_true(s:Wait('!empty(filter(copy(s:Calls()), {_, v -> v =~# "^static "}))', 3000),
-      \ 'static mode invokes omd --static-mode: ' .. string(s:Calls()))
-call assert_equal(2, len(simplemarkdown#external#Status()),
-      \ 'static mode leaves no server behind')
+call s:Ok(s:Wait('g:simplemarkdown_static_opened !=# ""', 8000), 'the static page is written and opened')
+let s:file = substitute(g:simplemarkdown_static_opened, '^file://', '', '')
+call s:Ok(filereadable(s:file), 'it is a file on disk: ' .. s:file)
+let s:static = join(readfile(s:file), "\n")
+call s:Ok(s:static =~# '<style>' && s:static =~# 'Kettle',
+      \ 'self-contained: its own stylesheet and its own content')
+call s:Ok(s:static =~# '"live":false', 'and its config says nothing is listening')
 
-" -------------------------------------------------------------- teardown ---
+" ── a buffer with no name ───────────────────────────────────────────────────
 
-" Closing the current buffer's server must leave the other one alone.
-SimpleMarkdownExternalClose
-call assert_true(s:Wait('len(simplemarkdown#external#Status()) == 1', 3000),
-      \ 'closing stops only this buffer''s server')
-call assert_equal(s:first_buf, simplemarkdown#external#Status()[0].bufnr,
-      \ 'the other buffer keeps its server')
+enew
+setfiletype markdown
+call setline(1, '# Nameless')
+SimpleMarkdownExternalOpen
+call s:Ok(empty(s:Status()), 'a buffer with no name starts no server')
 
-" Wiping the source buffer takes its server with it: a preview of a document
-" that is gone is just a held port.
-execute 'bwipeout ' .. s:first_buf
-call assert_true(s:Wait('empty(simplemarkdown#external#Status())', 3000),
-      \ 'wiping the buffer stops its server')
-call assert_true(s:Wait('ch_status(ch_open("127.0.0.1:' .. g:simplemarkdown_omd_port
-      \ .. '", {"waittime": 100})) !=# "open"', 3000),
-      \ 'and releases its port')
-
-" -------------------------------------------------------- a failing start ---
-
-" omd exiting straight away must not leave an entry that looks live.
-let $FAKE_OMD_FAIL = '3'
-execute 'edit ' .. fnameescape(s:second)
-call simplemarkdown#external#Open()
-call assert_true(s:Wait('empty(simplemarkdown#external#Status())', 3000),
-      \ 'a server that dies at startup is not left registered')
-unlet $FAKE_OMD_FAIL
-
-" ------------------------------------------------------ a missing binary ---
-
-let g:simplemarkdown_omd_path = '/nonexistent/omd'
-call assert_equal('', simplemarkdown#external#Executable(),
-      \ 'a bad configured path resolves to nothing')
-call simplemarkdown#external#Open()
-call assert_equal([], simplemarkdown#external#Status(),
-      \ 'nothing is started without a binary')
-
-" ----------------------------------------------------------------- close ---
-
-call simplemarkdown#external#StopAll()
-call assert_equal([], simplemarkdown#external#Status(), 'StopAll clears everything')
-call delete(s:first)
-call delete(s:second)
-call delete($FAKE_OMD_LOG)
+call simplemarkdown#Stop()
 
 if !empty(v:errors)
   for s:error in v:errors

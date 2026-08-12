@@ -27,6 +27,15 @@ pub fn outline(lines: &[String]) -> Vec<OutlineEntry> {
     md.insert(MdOptions::ENABLE_TASKLISTS);
     md.insert(MdOptions::ENABLE_HEADING_ATTRIBUTES);
     md.insert(MdOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
+    // The four the renderers set and this used to leave out.  A parser told
+    // less than they were told reads a different document: `+++` front matter
+    // becomes a paragraph, so a `# ...` inside it becomes a heading, and the
+    // outline grows a section the preview has never drawn — with a `foldexpr`
+    // and the section motions behind it.
+    md.insert(MdOptions::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
+    md.insert(MdOptions::ENABLE_DEFINITION_LIST);
+    md.insert(MdOptions::ENABLE_SUPERSCRIPT);
+    md.insert(MdOptions::ENABLE_SUBSCRIPT);
     md.insert(MdOptions::ENABLE_GFM);
 
     let mut starts = vec![0usize];
@@ -45,6 +54,16 @@ pub fn outline(lines: &[String]) -> Vec<OutlineEntry> {
             Event::Text(text) | Event::Code(text) => {
                 if let Some((_, _, gathered)) = collecting.as_mut() {
                     gathered.push_str(&text);
+                }
+            }
+            // A setext heading may run over several lines, and the break
+            // between them is a word boundary: without this, `Title over` /
+            // `two lines` gathers as `overtwo` and gets an anchor that no link
+            // written against the document — nor the browser preview, which
+            // reads the break the way a browser does — will ever match.
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, _, gathered)) = collecting.as_mut() {
+                    gathered.push(' ');
                 }
             }
             Event::End(TagEnd::Heading(_)) => {
@@ -103,6 +122,37 @@ mod tests {
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
+    }
+
+    /// The outline, the terminal preview and the browser preview all parse the
+    /// same document, and an anchor is where that has to be provable: a link
+    /// written `[x](#some-heading)` is resolved by comparing slugs, so a
+    /// heading the three do not agree about is a link that works in one preview
+    /// and not the other.
+    #[test]
+    fn the_outline_and_the_page_agree_about_what_is_a_heading() {
+        let source = "+++\ntitle = \"x\"\n# not a heading\n+++\n\n# Real\n\nterm\n: meaning\n";
+        let entries = outline(&lines(source));
+        let anchors: Vec<&str> = entries.iter().map(|entry| entry.anchor.as_str()).collect();
+        assert_eq!(anchors, vec!["real"], "front matter is not prose");
+
+        let page = crate::html::render(source, &crate::html::Options::default());
+        let paged: Vec<&str> = page.toc.iter().map(|item| item.anchor.as_str()).collect();
+        assert_eq!(anchors, paged);
+    }
+
+    /// A setext heading is the one kind that can span lines, and the break
+    /// between them is a word boundary in every reading of the document but
+    /// this module's old one.
+    #[test]
+    fn a_heading_that_spans_lines_is_slugged_as_prose() {
+        let source = "Title over\ntwo lines\n==========\n";
+        let entries = outline(&lines(source));
+        assert_eq!(entries[0].text, "Title over two lines");
+        assert_eq!(entries[0].anchor, "title-over-two-lines");
+
+        let page = crate::html::render(source, &crate::html::Options::default());
+        assert_eq!(page.toc[0].anchor, entries[0].anchor);
     }
 
     #[test]

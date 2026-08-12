@@ -19,7 +19,15 @@ use serde::{Deserialize, Serialize};
 /// v3 took the source line out of a row's identity and patches the row →
 /// source map separately ([`SrcPatch`]), which is what made the incremental
 /// reply apply to insertions and deletions rather than only to edits in place.
-pub const PROTOCOL_VERSION: u32 = 3;
+///
+/// v4 added the browser preview: the daemon renders the document to HTML and
+/// serves it itself, where it used to be a separate binary the plugin only
+/// supervised.  New request types alone would not need a bump — an old daemon
+/// answers one it does not know with an error rather than misbehaving — but a
+/// plugin that offered `:SimpleMarkdownExternal` against a daemon too old to
+/// serve would fail one command at a time, at the far end of a browser, which
+/// is a poor place to discover a version skew.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 // ─────────────────────────── requests ───────────────────────────
 
@@ -104,6 +112,166 @@ pub enum Request {
         #[serde(default)]
         lines: Vec<String>,
     },
+    /// Start a browser preview for one document, answered with `serve_result`.
+    ///
+    /// The document arrives as `lines`, exactly as a render does, rather than
+    /// being read from `path`: the preview then follows the buffer instead of
+    /// the file, which is the whole difference between reloading on `:w` and
+    /// reloading as you type.  `path` is still needed — it is the directory an
+    /// `![](./diagram.png)` is resolved against, and the name in the title bar.
+    #[serde(rename = "serve")]
+    Serve(Box<ServeRequest>),
+    /// New contents for a running preview.  Unanswered, like `cancel`: it
+    /// arrives on every keystroke and a reply per keystroke is JSON the editor
+    /// would parse on the main thread for nothing.
+    #[serde(rename = "serve_update")]
+    ServeUpdate {
+        #[serde(default)]
+        session: String,
+        #[serde(default)]
+        lines: Vec<String>,
+        /// 1-based source line the cursor is on; 0 to leave the page where the
+        /// reader put it.
+        #[serde(default)]
+        line: usize,
+    },
+    /// Move a running preview to a source line.  Separate from `serve_update`
+    /// because moving the cursor does not change the document, and re-rendering
+    /// it to say so would be the most expensive way to scroll a page.
+    #[serde(rename = "serve_cursor")]
+    ServeCursor {
+        #[serde(default)]
+        session: String,
+        #[serde(default)]
+        line: usize,
+    },
+    /// Stop one preview, or every one.  Unanswered: the editor has already
+    /// forgotten the session by the time it asks.
+    #[serde(rename = "serve_stop")]
+    ServeStop {
+        #[serde(default)]
+        session: String,
+        #[serde(default)]
+        all: bool,
+    },
+    /// One self-contained page for a document, answered with `html_result` and
+    /// serving nothing.  This is `:SimpleMarkdownExternalStatic`: no port, no
+    /// live reload, nothing left running when the editor exits.
+    #[serde(rename = "html")]
+    Html(Box<HtmlRequest>),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServeRequest {
+    pub id: u64,
+    /// Which preview this is.  The editor keys it by buffer; the daemon only
+    /// ever compares it.
+    #[serde(default)]
+    pub session: String,
+    /// Absolute path of the document.  Its directory is the only one the
+    /// server will hand a file out of.
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub lines: Vec<String>,
+    #[serde(default = "loopback")]
+    pub host: String,
+    /// The first port to try; one already in use moves the search up.
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_attempts")]
+    pub attempts: u16,
+    #[serde(default)]
+    pub page: PageOptions,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HtmlRequest {
+    pub id: u64,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub lines: Vec<String>,
+    #[serde(default)]
+    pub page: PageOptions,
+}
+
+/// How the browser preview looks and behaves.
+///
+/// Deliberately not [`Options`]: that one describes a layout in a terminal
+/// window — columns, box drawing, tab stops — and none of it means anything to
+/// a browser, which has its own idea of how wide a line should be.  The two
+/// sets overlap in exactly two flags, and sharing a struct for the sake of
+/// those two would put `unicode` and `max_width` on a page that has no columns.
+#[derive(Debug, Deserialize, Clone)]
+pub struct PageOptions {
+    /// Syntax-highlight fenced code blocks.
+    #[serde(default = "yes")]
+    pub syntax: bool,
+    /// Show a YAML front-matter block, collapsed, instead of hiding it.
+    #[serde(default = "yes")]
+    pub frontmatter: bool,
+    /// `auto` follows the reader's system; `light` and `dark` override it.
+    #[serde(default = "auto")]
+    pub theme: String,
+    /// `off`, `katex` or `mathjax`.
+    #[serde(default = "katex")]
+    pub math: String,
+    /// Where to load that engine from.  Empty takes the built-in default.
+    #[serde(default)]
+    pub math_url: String,
+    /// The text column, in CSS pixels.
+    #[serde(default = "default_max_width")]
+    pub max_width: usize,
+    /// Update as the buffer changes rather than only on `:w`.
+    #[serde(default = "yes")]
+    pub live: bool,
+    /// Scroll the page to follow the editor's cursor.
+    #[serde(default = "yes")]
+    pub follow: bool,
+    /// Let the page move the editor's cursor when the reader scrolls.
+    #[serde(default)]
+    pub sync_back: bool,
+}
+
+impl Default for PageOptions {
+    fn default() -> Self {
+        Self {
+            syntax: true,
+            frontmatter: true,
+            theme: auto(),
+            math: katex(),
+            math_url: String::new(),
+            max_width: default_max_width(),
+            live: true,
+            follow: true,
+            sync_back: false,
+        }
+    }
+}
+
+fn loopback() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_port() -> u16 {
+    3030
+}
+
+fn default_attempts() -> u16 {
+    24
+}
+
+fn auto() -> String {
+    "auto".to_string()
+}
+
+fn katex() -> String {
+    "katex".to_string()
+}
+
+fn default_max_width() -> usize {
+    900
 }
 
 #[derive(Debug, Deserialize)]
@@ -243,6 +411,28 @@ pub enum Event {
     OutlineResult { id: u64, toc: Vec<OutlineEntry> },
     #[serde(rename = "lint_result")]
     LintResult { id: u64, items: Vec<LintItem> },
+    /// The answer to `serve`: where to point the browser.  `url` already has
+    /// the wildcard bind resolved to loopback — a server on `0.0.0.0` is
+    /// reachable there, and that is where the browser on this machine has to
+    /// go.
+    #[serde(rename = "serve_result")]
+    ServeResult {
+        id: u64,
+        session: String,
+        url: String,
+        port: u16,
+    },
+    /// Unsolicited: the reader scrolled the page and asked the editor to
+    /// follow.  Carries no `id` on purpose — the supervisor routes a reply by
+    /// id to whoever is waiting for one, and nobody is waiting for this.
+    #[serde(rename = "serve_scrolled")]
+    ServeScrolled { session: String, line: usize },
+    /// The answer to `html`: a whole page, for the editor to write somewhere
+    /// and open.  The daemon does not write it: a process that renders a
+    /// document and a process that creates files beside it are different
+    /// blast radii, and only one of them can truncate the wrong path.
+    #[serde(rename = "html_result")]
+    HtmlResult { id: u64, html: String },
     #[serde(rename = "error")]
     Error { id: u64, message: String },
 }

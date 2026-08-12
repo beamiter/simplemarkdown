@@ -10,15 +10,21 @@ mod edit;
 mod format;
 mod glyphs;
 mod highlight;
+mod html;
 mod inline;
 mod lint;
 mod outline;
 mod protocol;
 mod render;
+mod serve;
 mod table;
 
-use protocol::{Event, Line, PROTOCOL_VERSION, Patch, RenderResult, Request, SrcPatch};
+use protocol::{
+    Event, HtmlRequest, Line, PROTOCOL_VERSION, PageOptions, Patch, RenderResult, Request,
+    ServeRequest, SrcPatch,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -30,6 +36,8 @@ Usage: simplemarkdown-daemon [OPTION]
 With no option the daemon speaks the JSON-lines protocol on stdin/stdout.
 
   --preview FILE [WIDTH]  render FILE to plain text and exit (default width 80)
+  --html FILE [THEME]     write the browser preview's page for FILE to stdout
+                          (THEME is auto, light or dark; default auto)
   --bench FILE [WIDTH] [RUNS]
                           time repeated renders of FILE and the patch one edit
                           produces (default width 80, 20 runs)
@@ -57,6 +65,8 @@ fn capabilities() -> BTreeMap<&'static str, bool> {
         ("edit", true),
         ("lint", true),
         ("outline", true),
+        ("serve", true),
+        ("html", true),
     ])
 }
 
@@ -156,8 +166,48 @@ fn stalest_session(sessions: &HashMap<String, Session>) -> Option<String> {
         .map(|(key, _)| key.clone())
 }
 
+/// A browser preview whose socket the daemon is holding open.
+///
+/// One per previewed buffer, keyed by the editor's session string.  It outlives
+/// every request that touches it — that is the difference between this and a
+/// render — so it is the one piece of daemon state that has to be torn down
+/// explicitly rather than dropped when a task ends.
+struct Preview {
+    server: serve::Server,
+    /// What the page was started with.  An update re-renders with the same
+    /// options rather than carrying them again on every keystroke.
+    opts: html::Options,
+    /// Which preview this is, across the life of the daemon.  The session key is
+    /// reused — a buffer previewed, closed and previewed again is the same key —
+    /// and `issued`/`served` start over with each one, so an update still
+    /// rendering when its preview was replaced would find a sequence number it
+    /// compares favourably against and push the old preview's document to the
+    /// new one's browser.
+    epoch: u64,
+    /// Updates handed out, and the newest one that reached the browser.
+    /// Renders finish on the blocking pool and can overtake one another, and a
+    /// page left showing the older of two keystrokes looks broken until the
+    /// next one happens to arrive.
+    issued: u64,
+    served: u64,
+}
+
+/// Hands out [`Preview::epoch`].  A plain counter: it only ever has to tell one
+/// preview from the one it replaced.
+static PREVIEW_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_epoch() -> u64 {
+    PREVIEW_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A browser preview costs a socket, a port and a copy of the document.  The
+/// editor opens one per buffer and closes them with the buffer, so this is a
+/// backstop against a client that has lost count, not a policy.
+const MAX_PREVIEWS: usize = 16;
+
 type Sessions = Arc<Mutex<HashMap<String, Session>>>;
 type Cancelled = Arc<Mutex<HashSet<u64>>>;
+type Previews = Arc<Mutex<HashMap<String, Preview>>>;
 
 /// One outline request, from the spawn to the reply — or to neither, if the
 /// editor withdrew it on the way.
@@ -354,6 +404,13 @@ fn main() -> std::process::ExitCode {
                 std::process::ExitCode::FAILURE
             }
         },
+        Some("--html") => match html_page(&args[1..]) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("simplemarkdown-daemon: {message}");
+                std::process::ExitCode::FAILURE
+            }
+        },
         Some("--preview") => match preview(&args[1..]) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(message) => {
@@ -399,6 +456,7 @@ async fn serve() -> std::io::Result<()> {
     // to be worth cancelling is also large enough to be cancelled mid-flight.
     let cancelled: Cancelled = Arc::new(Mutex::new(HashSet::new()));
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+    let previews: Previews = Arc::new(Mutex::new(HashMap::new()));
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Some(line) = lines.next_line().await? {
@@ -526,6 +584,34 @@ async fn serve() -> std::io::Result<()> {
                     };
                     send(&tx, event).await;
                 });
+            }
+            Request::Serve(request) => {
+                tokio::spawn(serve_start(*request, previews.clone(), out_tx.clone()));
+            }
+            Request::ServeUpdate {
+                session,
+                lines,
+                line,
+            } => {
+                tokio::spawn(serve_update(session, lines, line, previews.clone()));
+            }
+            Request::ServeCursor { session, line } => {
+                if let Some(preview) = previews.lock().await.get(&session) {
+                    preview.server.cursor(line);
+                }
+            }
+            Request::ServeStop { session, all } => {
+                let mut table = previews.lock().await;
+                if all {
+                    for (_, preview) in table.drain() {
+                        preview.server.stop();
+                    }
+                } else if let Some(preview) = table.remove(&session) {
+                    preview.server.stop();
+                }
+            }
+            Request::Html(request) => {
+                tokio::spawn(html_once(*request, out_tx.clone()));
             }
             Request::Render(request) => {
                 let tx = out_tx.clone();
@@ -663,9 +749,255 @@ async fn serve() -> std::io::Result<()> {
     // Dropping our sender lets the writer finish once the last in-flight render
     // has dropped its clone.  The timeout is a backstop: a wedged render must
     // not keep the process alive for ever.
+    // A browser preview is the one thing here that survives its request, so it
+    // is the one thing that has to be closed on the way out.  Dropping the
+    // runtime would do it, but not before the accept loops had been cancelled
+    // mid-write, which is how a browser ends up waiting on a stream nobody is
+    // ever going to finish.
+    for (_, preview) in previews.lock().await.drain() {
+        preview.server.stop();
+    }
+
     drop(out_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
     Ok(())
+}
+
+// ─────────────────────────── the browser preview ───────────────────────────
+
+/// The document, as the page renderer wants it.
+fn html_options(page: &PageOptions) -> html::Options {
+    html::Options {
+        syntax: page.syntax,
+        frontmatter: page.frontmatter,
+        // `$…$` is only worth parsing as math when something is going to typeset
+        // it; left on with no engine it would strip the dollars off prose that
+        // merely mentions a price.
+        math: page.math != "off",
+    }
+}
+
+/// The page around it.
+fn page_options(name: String, page: &PageOptions) -> html::PageOptions {
+    html::PageOptions {
+        name,
+        theme: page.theme.clone(),
+        math: page.math.clone(),
+        math_url: page.math_url.clone(),
+        max_width: page.max_width,
+        live: page.live,
+        follow: page.follow,
+        sync_back: page.sync_back,
+    }
+}
+
+/// The document's directory — the only one the server will hand a file out of —
+/// and the name to put in the title bar.
+fn document_root(path: &str) -> (PathBuf, String) {
+    let path = PathBuf::from(path);
+    let name = path.file_name().map_or_else(
+        || "markdown".to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    // A path that names a directory is its own root.  Taking its parent would
+    // put everything beside it inside the served tree, a level of the
+    // filesystem nobody asked for — and the editor sends whatever the buffer is
+    // called, which can be a directory listing.  Asked of the filesystem rather
+    // than guessed from the spelling, because a directory is allowed to be
+    // called `notes.md`.
+    if path.is_dir() {
+        return (path, name);
+    }
+    let root = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    (root, name)
+}
+
+async fn render_page(source: String, opts: html::Options) -> Result<html::Page, String> {
+    // Off the reactor for the same reason a terminal render is: syntect over a
+    // long document is tens of milliseconds of one core, and the editor is
+    // waiting for its next keystroke to be laid out on the same runtime.
+    tokio::task::spawn_blocking(move || html::render(&source, &opts))
+        .await
+        .map_err(|error| format!("render failed: {error}"))
+}
+
+async fn serve_start(request: ServeRequest, previews: Previews, tx: mpsc::Sender<String>) {
+    let id = request.id;
+    let session = request.session.clone();
+    let (root, name) = document_root(&request.path);
+    let opts = html_options(&request.page);
+
+    let page = match render_page(request.lines.join("\n"), opts.clone()).await {
+        Ok(page) => page,
+        Err(message) => {
+            send(&tx, Event::Error { id, message }).await;
+            return;
+        }
+    };
+
+    let sync_back = request.page.sync_back;
+    let config = serve::Config {
+        host: request.host.clone(),
+        port: request.port,
+        attempts: request.attempts.max(1),
+        root,
+        page,
+        page_opts: page_options(name, &request.page),
+    };
+    let mut server = match serve::Server::start(config).await {
+        Ok(server) => server,
+        Err(error) => {
+            send(
+                &tx,
+                Event::Error {
+                    id,
+                    message: format!(
+                        "no free port in {}-{} on {}: {error}",
+                        request.port,
+                        request.port.saturating_add(request.attempts.max(1) - 1),
+                        request.host
+                    ),
+                },
+            )
+            .await;
+            return;
+        }
+    };
+
+    // The page only reports where the reader scrolled to when it was told the
+    // editor wants to know; forwarding it otherwise would move the cursor of
+    // someone who asked for a preview, not for a remote control.
+    if sync_back && let Some(mut scrolled) = server.sync_back() {
+        let tx = tx.clone();
+        let session = session.clone();
+        tokio::spawn(async move {
+            while let Some(line) = scrolled.recv().await {
+                send(
+                    &tx,
+                    Event::ServeScrolled {
+                        session: session.clone(),
+                        line,
+                    },
+                )
+                .await;
+            }
+        });
+    }
+
+    let url = server.url().to_string();
+    let port = server.port();
+
+    // Everything that decides this preview's fate happens under one lock, held
+    // across no await.  The table used to be cleared of any old entry before
+    // the bind and written after it, with the lock dropped in between — and two
+    // `serve` requests for the same session, which the editor cannot prevent
+    // because it only learns a preview exists when the *reply* arrives, then
+    // both found the slot empty.  Whichever lost the insert became a listener
+    // nobody held a handle to, and `Server` deliberately has no `Drop` that
+    // stops one, so that server and its port were held until the daemon exited.
+    let displaced = {
+        let mut table = previews.lock().await;
+        if table.len() >= MAX_PREVIEWS && !table.contains_key(&session) {
+            // The table filled while this one was binding.  Its port goes back
+            // here rather than being held by a preview that is being refused:
+            // dropping the handle is exactly what does not stop a server.
+            server.stop();
+            None
+        } else {
+            Some(table.insert(
+                session.clone(),
+                Preview {
+                    server,
+                    opts,
+                    epoch: next_epoch(),
+                    issued: 0,
+                    served: 0,
+                },
+            ))
+        }
+    };
+
+    let Some(displaced) = displaced else {
+        send(
+            &tx,
+            Event::Error {
+                id,
+                message: format!("{MAX_PREVIEWS} browser previews are already running"),
+            },
+        )
+        .await;
+        return;
+    };
+
+    // A second `:SimpleMarkdownExternal` on a buffer that already has one means
+    // "again", not "another", and so does losing the race above: whatever this
+    // replaced is stopped, so its port comes back and the reader is not left
+    // with two tabs disagreeing.
+    if let Some(previous) = displaced {
+        previous.server.stop();
+    }
+
+    send(
+        &tx,
+        Event::ServeResult {
+            id,
+            session,
+            url,
+            port,
+        },
+    )
+    .await;
+}
+
+async fn serve_update(session: String, lines: Vec<String>, line: usize, previews: Previews) {
+    let (opts, epoch, seq) = {
+        let mut table = previews.lock().await;
+        let Some(preview) = table.get_mut(&session) else {
+            // The editor closed this preview while the keystroke that produced
+            // this update was still in the pipe.  Not an error, and not worth a
+            // reply to a request that never had one.
+            return;
+        };
+        preview.issued += 1;
+        (preview.opts.clone(), preview.epoch, preview.issued)
+    };
+
+    let Ok(page) = render_page(lines.join("\n"), opts).await else {
+        return;
+    };
+
+    let mut table = previews.lock().await;
+    let Some(preview) = table.get_mut(&session) else {
+        return;
+    };
+    // A different preview under the same key: this document belongs to a page
+    // that has already been closed, and the sequence it was measured against
+    // went with it.
+    if preview.epoch != epoch || seq <= preview.served {
+        return;
+    }
+    preview.served = seq;
+    preview.server.update(page);
+    if line > 0 {
+        preview.server.cursor(line);
+    }
+}
+
+async fn html_once(request: HtmlRequest, tx: mpsc::Sender<String>) {
+    let id = request.id;
+    let (_, name) = document_root(&request.path);
+    let opts = html_options(&request.page);
+    let page_opts = page_options(name, &request.page);
+    match render_page(request.lines.join("\n"), opts).await {
+        Ok(page) => {
+            let html = html::document(&page, &page_opts);
+            send(&tx, Event::HtmlResult { id, html }).await;
+        }
+        Err(message) => send(&tx, Event::Error { id, message }).await,
+    }
 }
 
 async fn stdout_writer(mut rx: mpsc::Receiver<String>) {
@@ -690,6 +1022,33 @@ async fn send(tx: &mpsc::Sender<String>, event: Event) {
 }
 
 // ─────────────────────────── CLI helpers ───────────────────────────
+
+/// The page `:SimpleMarkdownExternal` serves, on stdout.
+///
+/// The browser preview is the one part of this daemon whose output nobody can
+/// read in a terminal, which makes it the one part worth being able to pipe
+/// into a file and open — or into a headless browser and screenshot, which is
+/// how the stylesheet gets reviewed.
+fn html_page(args: &[String]) -> Result<(), String> {
+    let path = args.first().ok_or("--html needs a file")?;
+    let theme = args.get(1).map_or("auto", String::as_str);
+    if !matches!(theme, "auto" | "light" | "dark") {
+        return Err(format!("theme is auto, light or dark, not {theme}"));
+    }
+    let source = std::fs::read_to_string(path).map_err(|error| format!("{path}: {error}"))?;
+    let (_, name) = document_root(path);
+    let page = html::render(&source, &html::Options::default());
+    let mut opts = html::PageOptions {
+        name,
+        theme: theme.to_string(),
+        ..html::PageOptions::default()
+    };
+    // Nothing is listening: a page written to a file must not spend its life
+    // reconnecting to an SSE endpoint that was never there.
+    opts.live = false;
+    print!("{}", html::document(&page, &opts));
+    Ok(())
+}
 
 fn preview(args: &[String]) -> Result<(), String> {
     let path = args.first().ok_or("--preview needs a file")?;

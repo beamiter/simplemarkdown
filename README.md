@@ -185,24 +185,30 @@ servers remain independently controlled by `:SimpleMarkdownExternalClose[!]`.
 The terminal preview is for reading and navigating a document while you write
 it. Some things a terminal cannot do at all — images that are images, LaTeX
 that is typeset, proportional type — so there is a second preview that runs
-beside it rather than instead of it, served by
-[omd](https://github.com/ptrglbvc/omd):
-
-```sh
-cargo install omd
-```
+beside it rather than instead of it, served by the daemon you are already
+running. Nothing else to install:
 
 ```vim
-:SimpleMarkdownExternal        " toggle a live-reloading browser preview
-:SimpleMarkdownExternalStatic  " render once to a temp file, no server
+:SimpleMarkdownExternal        " toggle a live browser preview of this buffer
+:SimpleMarkdownExternalStatic  " write one self-contained HTML file, no server
 :SimpleMarkdownExternalClose!  " stop every server
 ```
 
-One server per buffer, each on its own port, all stopped when Vim exits. omd
-watches the file on disk, so the browser follows `:w` — the in-Vim preview is
-the one that updates as you type. Nothing about omd is linked into
-`simplemarkdown-daemon`: it brings a web server, a file watcher and a clipboard
-stack, none of which belong in a process whose job is laying out rows of text.
+The page follows the **buffer**, not the file: it updates as you type, scrolls
+to the block the cursor is in and washes it, and serves images from the
+document's directory and nowhere else. It is styled for reading a long
+document — a measured text column, CJK and Latin on the same baseline, GitHub's
+palette in light *and* dark following the system setting, a real syntax theme
+in fenced blocks, the five alert callouts, copy buttons, a contents rail. One
+server per buffer, each on its own port, all stopped when Vim exits.
+
+This used to be [omd](https://github.com/ptrglbvc/omd), and stopped being it
+for a reason worth stating: omd's stylesheet is `include_str!`d into its
+binary, so the entire appearance of this plugin's browser preview belonged to
+another project. A preview you cannot restyle is not a preview you own. The
+replacement costs one tokio feature (`net`) — and the three crates tokio brings
+with it for sockets — rather than a web framework, a file watcher and a
+clipboard stack.
 
 ## What it renders
 
@@ -240,7 +246,9 @@ Everything has a working default; these are the ones worth knowing about.
 | `g:simplemarkdown_sync_scroll` | `1` | preview follows the source cursor |
 | `g:simplemarkdown_sync_back` | `0` | source follows the preview cursor too |
 | `g:simplemarkdown_auto_open` | `0` | open a preview for every Markdown buffer |
-| `g:simplemarkdown_omd_port` | `3030` | first port the browser preview tries |
+| `g:simplemarkdown_browser_port` | `3030` | first port the browser preview tries |
+| `g:simplemarkdown_browser_theme` | `'auto'` | browser preview: `auto`/`light`/`dark` |
+| `g:simplemarkdown_browser_live` | `1` | browser preview follows the buffer, not `:w` |
 
 `:help simplemarkdown` documents the rest, including every highlight group.
 
@@ -276,7 +284,7 @@ make check-protocol # Rust, Vim and the handshake agree on the protocol version
 make check-classes  # prove the Rust and Vim text-property class lists agree
 make test-links     # link following, from the preview and from the source
 make test-protocol  # what a plugin updated without its daemon rebuilt does
-make test-external  # the browser preview, against a stand-in for omd
+make test-external  # the browser preview: serving, updating and teardown
 ```
 
 CI runs `make check` and nothing else, so the Makefile is the only place the

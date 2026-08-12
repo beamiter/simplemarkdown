@@ -318,8 +318,8 @@ second one.
                         render checksums counts as a whole document, not as a
                         patch: resynchronising is what it cost.
 
-The commands below drive the external preview — a browser, served by `omd`,
-alongside the in-Vim one rather than instead of it.  See
+The commands below drive the external preview — a browser, served by the same
+daemon, alongside the in-Vim one rather than instead of it.  See
 |simplemarkdown-external|.
 
                                                       *:SimpleMarkdownExternal*
@@ -327,8 +327,8 @@ alongside the in-Vim one rather than instead of it.  See
 
                                                   *:SimpleMarkdownExternalOpen*
 :SimpleMarkdownExternalOpen
-                        Start `omd` for this buffer and open the browser at it.
-                        If one is already serving this buffer, just re-open the
+                        Serve this buffer and open the browser at it.  If one
+                        is already serving this buffer, just re-open the
                         browser there.
 
                                                  *:SimpleMarkdownExternalClose*
@@ -337,8 +337,10 @@ alongside the in-Vim one rather than instead of it.  See
 
                                                 *:SimpleMarkdownExternalStatic*
 :SimpleMarkdownExternalStatic
-                        Render once to a temporary HTML file and open it, with
-                        no server and no live reload.
+                        Write one self-contained HTML file and open it, with no
+                        server and no live reload.  The page carries its own
+                        stylesheet, so it keeps working when it is moved,
+                        mailed or opened next year.
 
 ==============================================================================
 5. MAPPINGS                                          *simplemarkdown-mappings*
@@ -664,37 +666,66 @@ Default: 0
 The rest configure the external preview; none of them do anything unless a
 |:SimpleMarkdownExternal| command is used.
 
-                                                    *g:simplemarkdown_omd_path*
-Explicit path to the `omd` binary.  Empty searches $PATH and then
-`~/.cargo/bin`, which is where `cargo install` puts it and which a Vim started
-from a desktop session frequently has not picked up.
-Default: ''
+                                                     *g:simplemarkdown_browser*
+Open the browser when a server starts.  With this off the URL is echoed
+instead, which is what you want over SSH with a forwarded port.
+Default: 1
 
-                                                    *g:simplemarkdown_omd_host*
+                                                *g:simplemarkdown_browser_host*
 Address the server binds.  `'0.0.0.0'` makes the preview reachable from other
 machines on the network; the browser is still pointed at the loopback address.
+Bind a wildcard address only on a network you trust: the page serves files from
+the document's directory, and everyone who can reach the port can read them.
 Default: '127.0.0.1'
 
-                                                    *g:simplemarkdown_omd_port*
+                                                *g:simplemarkdown_browser_port*
 The first port tried.  A port already in use moves the search up rather than
 failing, so several buffers can be previewed at once.
 Range: 1024..65500
 Default: 3030
 
-                                                    *g:simplemarkdown_omd_args*
-Extra arguments passed to `omd`, between the host/port flags and the filename.
-Default: []
+                                               *g:simplemarkdown_browser_theme*
+`'auto'` follows the reader's system setting and changes with it; `'light'` and
+`'dark'` pin the page.  Whatever this says, the button in the corner of the
+page overrides it for that browser, and is remembered there.
+Default: 'auto'
 
-                                                 *g:simplemarkdown_omd_browser*
-Open the browser when a server starts.  With this off the URL is echoed
-instead, which is what you want over SSH with a forwarded port.
+                                                *g:simplemarkdown_browser_live*
+Update the page as the buffer changes, debounced by
+|g:simplemarkdown_debounce|.  With this off the page follows `:w` instead,
+which is what you want when a half-written sentence on a second monitor is a
+distraction rather than a preview.
 Default: 1
 
-                                           *g:simplemarkdown_omd_browser_delay*
-Milliseconds to wait before opening the browser, so it does not race the server
-to the port and land on a "connection refused" page.
-Range: 0..5000
-Default: 250
+                                                *g:simplemarkdown_browser_sync*
+Scroll the page to follow the cursor, and wash the block the cursor is in.
+Default: 1
+
+                                           *g:simplemarkdown_browser_sync_back*
+Let the page move the cursor when the reader scrolls it.  Off by default: it
+writes to a buffer somebody may be typing in, from a window that does not have
+focus.
+Default: 0
+
+                                                *g:simplemarkdown_browser_math*
+How to typeset `$...$` and `$$...$$`: `'katex'`, `'mathjax'` or `'off'`.  This
+is the one thing on the page that is not served from this machine — the engine
+is loaded from a CDN — so `'off'` is the setting for a page that must reach
+nowhere at all.  When the engine cannot be loaded the maths stays on screen as
+its own source rather than disappearing.
+Default: 'katex'
+
+                                            *g:simplemarkdown_browser_math_url*
+Where to load that engine from, for a mirror or a copy on your own network.
+Empty uses jsDelivr.
+Default: ''
+
+                                           *g:simplemarkdown_browser_max_width*
+The page's text column, in CSS pixels.  Prose is hard to read at 200 columns in
+a browser for the same reason it is in a terminal, and a maximised window
+offers rather more than 200.
+Range: 480..2400
+Default: 900
 
 ==============================================================================
 7. HIGHLIGHTING                                  *simplemarkdown-highlighting*
@@ -826,24 +857,52 @@ you are editing washed in the preview.  The browser preview is for seeing what
 the document will actually look like — proportional type, images that are
 images, and LaTeX that is typeset rather than shown as source.
 
-The browser side is `omd`, a separate binary you install yourself: >
+The browser side is the daemon you are already running.  It renders the
+document to HTML, serves it from a hand-rolled HTTP loop on a port of its own,
+and pushes changes down an event stream — one server per source buffer, all of
+them stopped when Vim exits, the buffer is wiped or the daemon does.  Nothing
+else has to be installed.
 
-    cargo install omd
-<
-Nothing about it is linked into `simplemarkdown-daemon`.  omd pulls in a web
-server, a file watcher and a clipboard stack, and none of that belongs in a
-process whose whole job is to lay out rows of text.  The plugin only supervises
-it: one server per source buffer, each on its own port, all of them stopped
-when Vim exits or the buffer is wiped.
+It was an external binary until v0.4.0, and stopped being one for a reason
+worth knowing: that binary's stylesheet was compiled into it, so the whole
+appearance of this plugin's browser preview — the typeface, the colours,
+whether it followed your system's light or dark setting — belonged to another
+project.  A preview you cannot restyle is not a preview you own.
+
+                                                *simplemarkdown-external-theme*
+The page is styled for reading a long document: a measured text column, type
+that has CJK and Latin fall on the same baseline, GitHub's palette in both
+light and dark, a real syntax theme in fenced blocks, GitHub's five alert
+callouts, and tables and images that scroll inside themselves rather than
+pushing the page sideways.  It follows the system's light/dark setting unless
+|g:simplemarkdown_browser_theme| says otherwise, and the button in the corner
+overrides both for that browser.
+
+The corner also carries a contents rail (for a document with three headings or
+more) and a switch for whether the page follows the cursor.  `t`, `f` and `d`
+toggle the three from the keyboard.  Fenced blocks grow a copy button when the
+pointer is over them.
 
                                                  *simplemarkdown-external-save*
-omd watches the file on disk, so the browser follows `:w` rather than every
-keystroke.  That is the trade for not keeping a shadow copy of the buffer on
-disk; the in-Vim preview is the one that updates as you type.
+The page follows the buffer, not the file: what is served is the text in Vim,
+debounced by |g:simplemarkdown_debounce|, so it updates as you type and shows
+changes you have not written yet.  Set |g:simplemarkdown_browser_live| to 0 to
+follow `:w` instead.
 
-A buffer that has never been written has no file to watch and starts no server.
+A buffer that has never been written is fine — it only needs a name, since its
+directory is what `![](./diagram.png)` resolves against and its name is what
+the tab is called.
 
-|:SimpleMarkdownHealth| reports whether omd was found and lists every URL
+                                                 *simplemarkdown-external-sync*
+The cursor and the page are tied together the same way the two Vim windows are:
+moving in the source scrolls the page to the matching block and washes it for a
+moment.  |g:simplemarkdown_browser_sync_back| ties the other direction too.
+
+Images and other files referenced relatively are served from the document's
+directory and from nowhere else: a `../` in a URL is refused, which matters
+because |g:simplemarkdown_browser_host| can be told to bind a wildcard address.
+
+|:SimpleMarkdownHealth| reports whether the daemon can serve and lists every URL
 currently being served.
 
 ==============================================================================
@@ -970,14 +1029,21 @@ Editing a very large document does not live-update
     Above 20000 lines the preview stops re-rendering on every keystroke and
     updates on write and on |:SimpleMarkdownRefresh| instead.
 
-"omd not found"
-    The external preview needs a binary this plugin does not ship.  Run
-    `cargo install omd`, or point |g:simplemarkdown_omd_path| at it.  The
-    in-Vim preview does not need it and is unaffected.
+"this daemon cannot serve"
+    The browser preview arrived in v0.4.0 and needs a daemon built since.  Run
+    `./install.sh`, then |:SimpleMarkdownRestart|.  The in-Vim preview says the
+    same thing in its own window; this is what |:SimpleMarkdownHealth| says.
 
 The browser preview does not follow my typing
-    By design: omd watches the file on disk, so it reloads on `:w`.  See
+    |g:simplemarkdown_browser_live| is 0, so it follows `:w` instead.  See
     |simplemarkdown-external-save|.
+
+Maths shows as `$x^2$` in the browser
+    The typesetting engine is loaded from a CDN and did not arrive.  Point
+    |g:simplemarkdown_browser_math_url| at a mirror, or set
+    |g:simplemarkdown_browser_math| to `'off'` and stop waiting for it.  The
+    source stays on screen either way, which is the point of rendering it that
+    way round.
 
 |:SimpleMarkdownHealth| says every render is full, none incremental
     Something is resetting the preview between renders — |:SimpleMarkdownLog|
@@ -1002,11 +1068,12 @@ install.sh runs it on the freshly built binary before replacing a working one,
 so a build that compiles but does not work never reaches lib/.
 
 Every daemon in the simple* suite answers these three the same way.  This one
-adds four of its own: >
+adds five of its own: >
 
   simplemarkdown-daemon --classes
   simplemarkdown-daemon --codes
   simplemarkdown-daemon --preview FILE [WIDTH]
+  simplemarkdown-daemon --html FILE [THEME]
   simplemarkdown-daemon --bench FILE [WIDTH] [RUNS]
 <
 --classes lists every text-property class the renderer can emit and --codes
@@ -1015,9 +1082,13 @@ every diagnostic |:SimpleMarkdownLint| can report; `make check-classes` and
 help documents all of the second.
 
 --preview lays a file out on stdout, which is also what `make preview` uses to
-review a layout change.  --bench times a first render, the steady-state
-renders after it and the patch a one-word edit produces; `make bench` runs it
-over the project's fixture.
+review a layout change.  --html writes the browser preview's page to stdout
+instead — the one part of this daemon's output that cannot be read in a
+terminal, so being able to pipe it into a file, or into a headless browser and
+a screenshot, is how the stylesheet gets reviewed.  THEME is `auto`, `light` or
+`dark`.  --bench times a first render, the steady-state renders after it and
+the patch a one-word edit produces; `make bench` runs it over the project's
+fixture.
 
 VENDORED SUPERVISOR                                *simplemarkdown-simplecore*
 
