@@ -993,7 +993,7 @@ async fn html_once(request: HtmlRequest, tx: mpsc::Sender<String>) {
     let page_opts = page_options(name, &request.page);
     match render_page(request.lines.join("\n"), opts).await {
         Ok(page) => {
-            let html = html::document(&page, &page_opts);
+            let html = html::document(&page, &page_opts, 0);
             send(&tx, Event::HtmlResult { id, html }).await;
         }
         Err(message) => send(&tx, Event::Error { id, message }).await,
@@ -1046,7 +1046,7 @@ fn html_page(args: &[String]) -> Result<(), String> {
     // Nothing is listening: a page written to a file must not spend its life
     // reconnecting to an SSE endpoint that was never there.
     opts.live = false;
-    print!("{}", html::document(&page, &opts));
+    print!("{}", html::document(&page, &opts, 0));
     Ok(())
 }
 

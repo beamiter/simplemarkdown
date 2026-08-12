@@ -118,6 +118,11 @@ pub struct Config {
 struct Snapshot {
     page: Page,
     doc: Arc<str>,
+    /// Which document this is.  A patch names the sequence it applies to, so a
+    /// browser that has missed a frame — or connected between one being built
+    /// and being sent — can tell, and wait for the next whole document instead
+    /// of splicing into one it does not have.
+    seq: u64,
 }
 
 struct State {
@@ -183,8 +188,9 @@ impl Server {
             root: root.canonicalize().unwrap_or(root),
             opts: page_opts,
             snapshot: Mutex::new(Arc::new(Snapshot {
-                doc: Arc::from(doc_frame(&page)),
+                doc: Arc::from(doc_frame(&page, 0)),
                 page,
+                seq: 0,
             })),
             events,
             cursor: cursor_tx,
@@ -209,17 +215,55 @@ impl Server {
         &self.url
     }
 
-    /// Replace the document and push it to every connected browser.
+    /// Replace the document and push it to every connected browser — as the
+    /// blocks that moved where that is smaller, and as the whole thing where it
+    /// is not.
+    ///
+    /// The snapshot is replaced and the frame sent under one lock, and a
+    /// browser subscribes under the same one: otherwise a tab opened between
+    /// the two would be handed the new document *and* the patch that produced
+    /// it, and would splice an edit into a document that already had it.
     pub fn update(&self, page: Page) {
-        let snapshot = Arc::new(Snapshot {
-            doc: Arc::from(doc_frame(&page)),
+        let mut held = lock(&self.state.snapshot);
+        let previous = held.clone();
+        let seq = previous.seq + 1;
+
+        // No periodic whole document to fall back on: the page checks both
+        // that a patch names the sequence it is holding and that the splice
+        // left it with the number of children the daemon says it should have,
+        // and reloads itself when either fails.  Sending the document
+        // occasionally *just in case* would cost a quarter of a megabyte every
+        // few keystrokes on a long one, to repair a state that is detected.
+        let payload = match block_patch(&previous.page, &page) {
+            Some(splice) => {
+                let frame = frame(&PatchEvent {
+                    k: "patch",
+                    seq,
+                    base: previous.seq,
+                    from: splice.from,
+                    del: splice.del,
+                    html: splice.html,
+                    shift: splice.shift,
+                    blocks: page.blocks.len(),
+                    // The rail and the tab are rebuilt from these, and on a
+                    // keystroke inside a paragraph neither has moved.
+                    title: (page.title != previous.page.title).then_some(page.title.as_str()),
+                    toc: (page.toc != previous.page.toc).then_some(page.toc.as_slice()),
+                });
+                Arc::from(frame)
+            }
+            None => Arc::from(doc_frame(&page, seq)),
+        };
+
+        *held = Arc::new(Snapshot {
+            doc: Arc::from(doc_frame(&page, seq)),
             page,
+            seq,
         });
-        *lock(&self.state.snapshot) = snapshot.clone();
         // A send with nobody listening is the ordinary case — the user has not
         // opened the tab yet — and the browser that arrives next is handed the
         // snapshot on connect.
-        let _ = self.state.events.send(snapshot.doc.clone());
+        let _ = self.state.events.send(payload);
     }
 
     /// Push a scroll position.
@@ -277,9 +321,38 @@ fn current_doc(state: &State) -> Arc<str> {
 #[derive(Serialize)]
 struct DocEvent<'a> {
     k: &'static str,
+    seq: u64,
     title: &'a str,
     html: &'a str,
     toc: &'a [TocItem],
+    /// How many children `#sm-doc` must have once this is in place.  The page
+    /// splices by child index, so a count it disagrees with is the one thing
+    /// it cannot detect on its own — and it stops splicing until the next
+    /// whole document rather than editing the wrong paragraph.
+    blocks: usize,
+}
+
+/// The blocks that moved: replace `del` of the page's children, starting at
+/// `from`, with the elements `html` parses to.
+#[derive(Serialize)]
+struct PatchEvent<'a> {
+    k: &'static str,
+    seq: u64,
+    base: u64,
+    from: usize,
+    del: usize,
+    html: &'a str,
+    blocks: usize,
+    /// Add `delta` to the `data-line` of every child from `from` on.  Absent
+    /// when the edit neither added nor removed a source line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shift: Option<Shift>,
+    /// Only when they changed.  The contents rail is rebuilt from scratch when
+    /// it arrives, and on a keystroke inside a paragraph it has not moved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toc: Option<&'a [TocItem]>,
 }
 
 #[derive(Serialize)]
@@ -293,12 +366,166 @@ struct CursorReport {
     line: usize,
 }
 
-fn doc_frame(page: &Page) -> String {
+fn doc_frame(page: &Page, seq: u64) -> String {
     frame(&DocEvent {
         k: "doc",
+        seq,
         title: &page.title,
         html: &page.body,
         toc: &page.toc,
+        blocks: page.blocks.len(),
+    })
+}
+
+/// The splice that turns `before` into `after`, or `None` when there is not one
+/// worth sending.
+///
+/// The shape is the row patch's, for the same reason and with the same trade:
+/// trimming the common prefix and then the common suffix finds exactly the run
+/// an edit touched, and cannot describe two edits in different places as two
+/// hunks — it spans them.  That is the right answer for a preview driven one
+/// keystroke at a time.
+struct BlockPatch<'a> {
+    from: usize,
+    del: usize,
+    html: &'a str,
+    /// What the blocks *below* the splice need doing to their `data-line`.
+    /// `None` when they need nothing, which is every edit that neither adds nor
+    /// removes a source line.
+    shift: Option<Shift>,
+}
+
+#[derive(Serialize, Clone, Copy)]
+struct Shift {
+    from: usize,
+    delta: i64,
+}
+
+/// Two blocks are the same block when they differ only in which source line
+/// they came from.
+///
+/// Pressing Enter at the top of a document moves every `data-line` below it and
+/// changes nothing else about any of them; comparing the markup as it stands
+/// would report the whole document as changed and send it.  This is the same
+/// trap [`crate::protocol::Line`] avoids by not comparing its own `src`, and
+/// the correction is carried the same way: separately, as one integer.
+fn same_but_for_lines(a: &str, b: &str) -> bool {
+    const ATTR: &str = " data-line=\"";
+    let (mut a, mut b) = (a, b);
+    loop {
+        let (at_a, at_b) = (a.find(ATTR), b.find(ATTR));
+        let (Some(at_a), Some(at_b)) = (at_a, at_b) else {
+            // Neither has another one, or only one does: what is left has to
+            // match exactly either way.
+            return at_a.is_none() && at_b.is_none() && a == b;
+        };
+        if a[..at_a] != b[..at_b] {
+            return false;
+        }
+        let (Some(end_a), Some(end_b)) = (
+            a[at_a + ATTR.len()..].find('"'),
+            b[at_b + ATTR.len()..].find('"'),
+        ) else {
+            return false;
+        };
+        a = &a[at_a + ATTR.len() + end_a + 1..];
+        b = &b[at_b + ATTR.len() + end_b + 1..];
+    }
+}
+
+fn block_patch<'a>(before: &Page, after: &'a Page) -> Option<BlockPatch<'a>> {
+    if !before.splittable || !after.splittable {
+        return None;
+    }
+    let old = &before.blocks;
+    let new = &after.blocks;
+    let same = |a: &crate::html::Block, b: &crate::html::Block| {
+        same_but_for_lines(&before.body[a.at.clone()], &after.body[b.at.clone()])
+    };
+
+    let mut head = 0;
+    while head < old.len() && head < new.len() && same(&old[head], &new[head]) {
+        head += 1;
+    }
+    let mut tail = 0;
+    while tail < old.len() - head
+        && tail < new.len() - head
+        && same(&old[old.len() - 1 - tail], &new[new.len() - 1 - tail])
+    {
+        tail += 1;
+    }
+
+    let del = old.len() - head - tail;
+    let kept = &new[head..new.len() - tail];
+    let html = match (kept.first(), kept.last()) {
+        (Some(first), Some(last)) => &after.body[first.at.start..last.at.end],
+        // A pure deletion: nothing replaces the blocks that went.
+        _ => "",
+    };
+
+    // What the blocks that survive the splice need doing to their `data-line`.
+    //
+    // Indexed against the document the page is *holding*, and applied before
+    // the splice, because the blocks the splice inserts already carry the right
+    // lines and shifting them again would move them twice.  The prefix is
+    // walked as well as the tail: `same_but_for_lines` is what let the prefix
+    // swallow every block below an inserted line in the first place, so the
+    // blocks needing correction are frequently the ones it matched.
+    //
+    // Almost always one integer — `n` lines inserted anywhere above moves
+    // everything below by `n` — and where it is not, the honest answer is the
+    // whole document.
+    let mut shift: Option<Shift> = None;
+    let mut note = |from: usize, was: usize, now: usize| -> bool {
+        if was == now {
+            return true;
+        }
+        // A block that came from no source line at all — the footnote section —
+        // is 0 on both sides and would look like an enormous shift.
+        if was == 0 || now == 0 {
+            return false;
+        }
+        let delta = now as i64 - was as i64;
+        match shift {
+            None => {
+                shift = Some(Shift { from, delta });
+                true
+            }
+            Some(seen) => seen.delta == delta,
+        }
+    };
+    for index in 0..head {
+        if !note(index, old[index].line, new[index].line) {
+            return None;
+        }
+    }
+    for offset in 0..tail {
+        let index = old.len() - tail + offset;
+        if !note(index, old[index].line, new[new.len() - tail + offset].line) {
+            return None;
+        }
+    }
+
+    if del == 0 && html.is_empty() && shift.is_none() {
+        // Nothing moved at all.
+        return Some(BlockPatch {
+            from: head,
+            del: 0,
+            html: "",
+            shift: None,
+        });
+    }
+    // Not worth the splice unless it is substantially smaller, exactly as the
+    // row patch decides: a rewrite of most of the document is cheaper for the
+    // page to take as one replacement than as a splice of nearly everything.
+    if html.len() * 2 > after.body.len() {
+        return None;
+    }
+    Some(BlockPatch {
+        from: head,
+        del,
+        html,
+        shift,
     })
 }
 
@@ -452,10 +679,10 @@ async fn handle(stream: &mut TcpStream, state: &State) -> io::Result<()> {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => {
             let snapshot = current(state);
-            let page = document(&snapshot.page, &state.opts);
+            let page = document(&snapshot.page, &state.opts, snapshot.seq);
             respond(stream, OK, "text/html; charset=utf-8", page.as_bytes()).await
         }
-        ("GET", "/events") => events(stream, state).await,
+        ("GET", "/events") => events(stream, state, already_has(&request.query)).await,
         ("POST", "/cursor") => cursor(stream, state, &request, rest).await,
         ("GET", path) => asset(stream, state, path).await,
         _ => respond_text(stream, NOT_ALLOWED, "method not allowed").await,
@@ -464,15 +691,41 @@ async fn handle(stream: &mut TcpStream, state: &State) -> io::Result<()> {
 
 // ─────────────────────────── the event stream ───────────────────────────
 
-async fn events(stream: &mut TcpStream, state: &State) -> io::Result<()> {
-    let mut events = state.events.subscribe();
+/// The document the browser says it already has, from `?have=N`.
+///
+/// The page it was served carries the whole body, and the stream would
+/// otherwise open by sending it again — a quarter of a megabyte on a long
+/// document, for a browser that is looking at it already.
+fn already_has(query: &str) -> Option<u64> {
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("have="))
+        .and_then(|value| value.parse().ok())
+}
+
+async fn events(stream: &mut TcpStream, state: &State, have: Option<u64>) -> io::Result<()> {
+    // Subscribed while holding the snapshot, so that the document this
+    // connection is handed and the frames it will receive cannot straddle an
+    // update: either it takes the lock first and gets the old document plus the
+    // patch that moves it on, or `update` takes it first and this gets the new
+    // document and misses the patch entirely.  Both are right; the interleaving
+    // this excludes is the one where it gets both.
+    let (mut events, opening) = {
+        let held = lock(&state.snapshot);
+        let opening = (have != Some(held.seq)).then(|| held.doc.clone());
+        (state.events.subscribe(), opening)
+    };
     let mut shutdown = state.shutdown.subscribe();
 
     write_bounded(stream, SSE_HEAD.as_bytes()).await?;
     // The current document goes out before anything else: a browser that
     // connects between two edits — a reload, a second tab — would otherwise sit
-    // blank until the user next typed something.
-    write_bounded(stream, current_doc(state).as_bytes()).await?;
+    // blank until the user next typed something.  Unless it has just been
+    // handed that very document in the page it is running from, which is the
+    // ordinary case and the expensive one.
+    if let Some(opening) = opening {
+        write_bounded(stream, opening.as_bytes()).await?;
+    }
     stream.flush().await?;
 
     let start = tokio::time::Instant::now() + KEEPALIVE;
@@ -666,6 +919,7 @@ enum Incoming {
 struct RequestHead {
     method: String,
     path: String,
+    query: String,
     host: String,
     content_length: usize,
 }
@@ -722,6 +976,9 @@ fn parse_head(text: &str) -> Option<RequestHead> {
     let method = request_line.next()?.to_string();
     let target = request_line.next()?;
     let path = target.split(['?', '#']).next()?.to_string();
+    let query = target.split_once('?').map_or(String::new(), |(_, rest)| {
+        rest.split('#').next().unwrap_or("").to_string()
+    });
 
     let mut content_length = 0;
     let mut host = String::new();
@@ -742,6 +999,7 @@ fn parse_head(text: &str) -> Option<RequestHead> {
     Some(RequestHead {
         method,
         path,
+        query,
         host,
         content_length,
     })
@@ -833,17 +1091,14 @@ async fn respond_empty(stream: &mut TcpStream, status: &str) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Rendered rather than hand-built, so that the block index every patch is
+    /// computed from is the one the emitter really produces.
+    fn rendered(markdown: &str) -> Page {
+        crate::html::render(markdown, &crate::html::Options::default())
+    }
+
     fn page() -> Page {
-        Page {
-            title: "notes.md".to_string(),
-            body: "<p data-line=\"1\">hello from the preview</p>".to_string(),
-            toc: vec![TocItem {
-                level: 2,
-                text: "A heading".to_string(),
-                anchor: "a-heading".to_string(),
-                line: 7,
-            }],
-        }
+        rendered("## A heading\n\nhello from the preview\n")
     }
 
     fn options(sync_back: bool) -> PageOptions {
@@ -956,11 +1211,11 @@ mod tests {
 
     #[test]
     fn a_doc_event_is_one_line_of_json_in_an_sse_frame() {
-        let mut page = page();
         // A newline in the body is the case that would break the framing if the
         // JSON were assembled by hand.
-        page.body = "<pre><code>one\ntwo</code></pre>".to_string();
-        let framed = doc_frame(&page);
+        let page = rendered("## A heading\n\n```\none\ntwo\n```\n");
+        assert!(page.body.contains('\n'), "{}", page.body);
+        let framed = doc_frame(&page, 1);
 
         assert!(framed.starts_with("data: {"), "{framed}");
         assert!(framed.ends_with("\n\n"), "{framed}");
@@ -972,6 +1227,111 @@ mod tests {
         assert!(framed.contains(r#""k":"doc""#), "{framed}");
         assert!(framed.contains(r#""anchor":"a-heading""#), "{framed}");
         assert!(framed.contains(r#"one\ntwo"#), "{framed}");
+    }
+
+    /// The property the whole scheme rests on: applying the splice to the
+    /// blocks the page is holding yields the blocks the daemon has.  Held over
+    /// several shapes of edit, because the one that matters is not the one in
+    /// the middle of a paragraph — it is the one that adds or removes a block,
+    /// where an off-by-one moves every heading below it.
+    #[test]
+    fn a_patch_turns_the_old_blocks_into_the_new_ones() {
+        let base = "# Title\n\nalpha\n\nbeta\n\n## Two\n\ngamma\n";
+        let edits = [
+            // in place
+            "# Title\n\nalpha!\n\nbeta\n\n## Two\n\ngamma\n",
+            // inserted in the middle
+            "# Title\n\nalpha\n\nnew\n\nbeta\n\n## Two\n\ngamma\n",
+            // removed from the middle
+            "# Title\n\nbeta\n\n## Two\n\ngamma\n",
+            // appended
+            "# Title\n\nalpha\n\nbeta\n\n## Two\n\ngamma\n\ndelta\n",
+            // removed from the end
+            "# Title\n\nalpha\n\nbeta\n",
+            // nothing at all
+            "",
+        ];
+
+        let before = rendered(base);
+        // What the page is holding: the markup of each child, and the source
+        // line the sync reads off it.  Both have to come out right.
+        let held: Vec<(&str, usize)> = before
+            .blocks
+            .iter()
+            .map(|block| (&before.body[block.at.clone()], block.line))
+            .collect();
+
+        for edit in edits {
+            let after = rendered(edit);
+            let want: Vec<(&str, usize)> = after
+                .blocks
+                .iter()
+                .map(|block| (&after.body[block.at.clone()], block.line))
+                .collect();
+            let Some(splice) = block_patch(&before, &after) else {
+                // Refusing to patch is always allowed — the page then takes the
+                // whole document — so it is not a failure, only a missed saving.
+                continue;
+            };
+            let kept = after.blocks.len() - (held.len() - splice.from - splice.del);
+            let inserted: Vec<(&str, usize)> = after.blocks[splice.from..kept]
+                .iter()
+                .map(|block| (&after.body[block.at.clone()], block.line))
+                .collect();
+            assert_eq!(
+                inserted.iter().map(|(html, _)| *html).collect::<String>(),
+                splice.html,
+                "the html a patch carries is exactly the blocks it inserts, for {edit:?}"
+            );
+
+            // In the page's order: the lines of what is already there are
+            // corrected first, indexed against the children as they stand, and
+            // only then are the blocks spliced in — they arrive with their own
+            // lines already right.
+            let mut applied = held.clone();
+            if let Some(shift) = splice.shift {
+                for entry in applied.iter_mut().skip(shift.from) {
+                    if entry.1 != 0 {
+                        entry.1 = (entry.1 as i64 + shift.delta) as usize;
+                    }
+                }
+            }
+            applied.splice(splice.from..splice.from + splice.del, inserted);
+            // Compared the way the diff compares: the `data-line` written into
+            // the markup of an untouched block is stale until the page applies
+            // the shift, and applying it is what the next assertion checks.
+            assert_eq!(applied.len(), want.len(), "block count after {edit:?}");
+            for (had, wanted) in applied.iter().zip(&want) {
+                assert!(
+                    same_but_for_lines(had.0, wanted.0),
+                    "markup after {edit:?}:\n  {}\n  {}",
+                    had.0,
+                    wanted.0
+                );
+            }
+            let applied_lines: Vec<usize> = applied.iter().map(|(_, line)| *line).collect();
+            let want_lines: Vec<usize> = want.iter().map(|(_, line)| *line).collect();
+            assert_eq!(applied_lines, want_lines, "source lines after {edit:?}");
+        }
+    }
+
+    /// A document the page cannot splice — raw HTML can open a tag it closes
+    /// three blocks later, so what the browser builds is not one element per
+    /// block and a child index means nothing.
+    #[test]
+    fn a_document_with_raw_html_is_never_patched() {
+        let before = rendered("<div>\n\nalpha\n\n</div>\n");
+        let after = rendered("<div>\n\nbeta\n\n</div>\n");
+        assert!(!before.splittable, "{:?}", before.blocks);
+        assert!(block_patch(&before, &after).is_none());
+    }
+
+    #[test]
+    fn a_browser_is_not_re_sent_the_document_it_arrived_with() {
+        assert_eq!(already_has("have=7"), Some(7));
+        assert_eq!(already_has("x=1&have=12&y=2"), Some(12));
+        assert_eq!(already_has(""), None);
+        assert_eq!(already_has("have=soon"), None);
     }
 
     #[test]
@@ -1215,11 +1575,7 @@ mod tests {
 
         // Only now is this connection certainly subscribed, which is why the
         // update comes after the first frame rather than before it.
-        server.update(Page {
-            title: "notes.md".to_string(),
-            body: "<p data-line=\"1\">the second draft</p>".to_string(),
-            toc: Vec::new(),
-        });
+        server.update(rendered("## A heading\n\nthe second draft\n"));
         expect(&mut stream, &mut seen, "the second draft").await;
 
         server.cursor(9);

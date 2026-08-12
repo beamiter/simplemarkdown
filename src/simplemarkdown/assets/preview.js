@@ -68,7 +68,12 @@
     light: 'Theme: light',
     dark: 'Theme: dark'
   };
-  const DOT_TITLE = { live: 'live', reconnecting: 'reconnecting…', dead: 'disconnected' };
+  const DOT_TITLE = {
+    live: 'live',
+    reconnecting: 'reconnecting…',
+    dead: 'disconnected',
+    stale: 'out of step with the editor — reload to catch up'
+  };
 
   // ─────────────────────────── configuration ───────────────────────────
 
@@ -78,6 +83,9 @@
   function readConfig() {
     const given = window.SM && typeof window.SM === 'object' ? window.SM : {};
     return {
+      // -1 for a page that came from no server at all: it can hold no patch,
+      // and there is nothing to tell a stream it already has.
+      seq: Number.isInteger(given.seq) ? given.seq : -1,
       live: given.live === true,
       follow: given.follow === true,
       syncBack: given.syncBack === true,
@@ -737,6 +745,7 @@
     }
     dot.classList.toggle('sm-reconnecting', state === 'reconnecting');
     dot.classList.toggle('sm-dead', state === 'dead');
+    dot.classList.toggle('sm-stale', state === 'stale');
     dot.dataset.state = state;
     dot.title = DOT_TITLE[state];
   }
@@ -748,7 +757,10 @@
     window.clearTimeout(retryTimer);
     retryTimer = 0;
     try {
-      source = new window.EventSource('/events');
+      // Says which document this page is holding, so the stream does not open
+      // by sending back the one it was just served in the page it is running
+      // from — a quarter of a megabyte, on a long document, for nothing.
+      source = new window.EventSource('/events?have=' + encodeURIComponent(seq));
     } catch (err) {
       // A page opened from disk has no origin to ask, and no amount of retrying
       // will give it one.
@@ -803,6 +815,8 @@
     }
     if (message.k === 'doc') {
       applyDoc(message);
+    } else if (message.k === 'patch') {
+      applyPatch(message);
     } else if (message.k === 'line') {
       onEditorLine(message.line);
     } else if (message.k === 'bye') {
@@ -826,6 +840,17 @@
     SM.syncBack = false;
   }
 
+  // Which document this page is holding, and whether it may be spliced into.
+  // A patch names the sequence it applies to; one that names any other is a
+  // frame this page has missed, and splicing it in would edit the wrong
+  // paragraph rather than fail.  Patching stops until the next whole document,
+  // which the daemon sends periodically for exactly this reason.
+  // Seeded from the shell: the page was rendered from a document the daemon
+  // knows the number of, and its markup is that document — so it starts able to
+  // take a patch, and tells the stream not to send it what it is looking at.
+  let seq = typeof SM.seq === 'number' ? SM.seq : -1;
+  let patchable = seq >= 0;
+
   function applyDoc(message) {
     if (!doc || typeof message.html !== 'string') {
       return;
@@ -833,12 +858,143 @@
     const anchor = recordAnchor();
     dropFlash();
     doc.innerHTML = message.html;
-    const title = typeof message.title === 'string' && message.title ? message.title : SM.name;
-    if (title) {
+    seq = typeof message.seq === 'number' ? message.seq : -1;
+    // The daemon splices by child index and cannot see what the browser built
+    // out of the HTML it sent.  This is the one check that catches a document
+    // whose blocks did not come out one element each — and it is a comparison,
+    // not a guess.
+    patchable = seq >= 0 && doc.children.length === message.blocks;
+    finishSwap(message.title, message.toc, anchor);
+  }
+
+  function applyPatch(message) {
+    if (!doc || typeof message.html !== 'string') {
+      return;
+    }
+    if (!patchable || message.base !== seq) {
+      resync();
+      return;
+    }
+    const from = message.from;
+    const del = message.del;
+    if (!Number.isInteger(from) || !Number.isInteger(del) || from < 0 || del < 0
+        || from + del > doc.children.length) {
+      resync();
+      return;
+    }
+
+    const anchor = recordAnchor();
+    dropFlash();
+
+    // Before the splice, and indexed against the children as they stand: every
+    // block below an inserted line kept its markup and moved its source line,
+    // which is exactly what the diff refused to call a change — so the
+    // correction arrives as one integer rather than as the document.  The
+    // blocks the splice is about to insert already carry the right lines, and
+    // shifting them too would move them twice.
+    if (message.shift) {
+      shiftLines(message.shift.from, message.shift.delta);
+    }
+
+    // Parsed in a template so the fragment is built once, off the document,
+    // and the page lays out once when it is put in — rather than once per
+    // element as they are appended.
+    const template = document.createElement('template');
+    template.innerHTML = message.html;
+    const before = doc.children[from + del] || null;
+    for (let i = 0; i < del; i += 1) {
+      const going = doc.children[from];
+      // The newline the daemon writes after each block is a text node no child
+      // index can see.  It belongs to the block, and left behind it would
+      // accumulate one stray node per replacement for the life of the tab.
+      let trailing = going.nextSibling;
+      going.remove();
+      while (trailing && trailing.nodeType === Node.TEXT_NODE && !trailing.nodeValue.trim()) {
+        const next = trailing.nextSibling;
+        trailing.remove();
+        trailing = next;
+      }
+    }
+    doc.insertBefore(template.content, before);
+
+    seq = message.seq;
+    patchable = doc.children.length === message.blocks;
+    // Absent means unchanged, which on a keystroke inside a paragraph is the
+    // ordinary case: neither the tab's name nor the rail has moved.
+    finishSwap(message.title, message.toc, anchor);
+  }
+
+  // A patch that cannot be applied means this page is holding a document the
+  // daemon does not think it is holding.  There is no channel to ask for a
+  // fresh one — the stream only goes one way — so the page fetches it the way
+  // it fetched the first: by loading itself again.  Guarded by the clock, in
+  // session storage so it survives the reload, because a page that reloaded
+  // itself in a loop would be worse than one showing a stale document.
+  const RESYNC_KEY = 'simplemarkdown:resync';
+  const RESYNC_QUIET_MS = 30000;
+
+  function resync() {
+    patchable = false;
+    let last = 0;
+    try {
+      last = Number(window.sessionStorage.getItem(RESYNC_KEY)) || 0;
+    } catch (err) {
+      // Storage is unavailable in some privacy modes.  Without it the guard
+      // cannot be trusted, so the reload is not taken at all.
+      setDot('stale');
+      return;
+    }
+    if (Date.now() - last < RESYNC_QUIET_MS) {
+      // Already tried recently: stay put and show it, rather than spin.  The
+      // next edit large enough to be sent whole repairs the page anyway.
+      setDot('stale');
+      return;
+    }
+    try {
+      window.sessionStorage.setItem(RESYNC_KEY, String(Date.now()));
+    } catch (err) {
+      setDot('stale');
+      return;
+    }
+    window.location.reload();
+  }
+
+  function shiftLines(from, delta) {
+    if (!Number.isInteger(from) || !Number.isInteger(delta) || delta === 0) {
+      return;
+    }
+    const children = doc.children;
+    for (let i = Math.max(0, from); i < children.length; i += 1) {
+      shiftElement(children[i], delta);
+      // Descendants too.  A paragraph inside a quote, an item inside a list and
+      // a row inside a table all carry their own source line, and the index the
+      // scroll sync bisects is built from every `[data-line]` in the document,
+      // not from the top-level children alone — so shifting only the blocks
+      // would leave the finer anchors pointing where the text used to be.
+      for (const nested of children[i].querySelectorAll('[data-line]')) {
+        shiftElement(nested, delta);
+      }
+    }
+  }
+
+  function shiftElement(el, delta) {
+    const had = Number(el.dataset.line);
+    // An element that came from no particular source line — the footnote
+    // section — stays where it is, exactly as an unmapped row does.
+    if (had > 0) {
+      el.dataset.line = String(had + delta);
+    }
+  }
+
+  function finishSwap(rawTitle, toc, anchor) {
+    const title = typeof rawTitle === 'string' && rawTitle ? rawTitle : SM.name;
+    if (typeof rawTitle === 'string' && title) {
       document.title = title;
     }
     indexBlocks();
-    buildToc(message.toc);
+    if (toc) {
+      buildToc(toc);
+    }
     // MathJax typesets asynchronously, and the height of everything below each
     // formula changes as they land.  So the place is put back twice: once now,
     // for the document as it stands, and once more when the engine has settled.

@@ -51,11 +51,25 @@ macro_rules! push {
 }
 
 /// One entry of the page's contents list.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct TocItem {
     pub level: u8,
     pub text: String,
     pub anchor: String,
+}
+
+/// One top-level block: where its HTML sits in [`Page::body`], and the source
+/// line it came from.
+///
+/// The line is carried beside the HTML as well as inside it, because that is
+/// what lets an insertion be pushed as a splice.  Every block below an inserted
+/// line has a new `data-line` and identical HTML otherwise, so a diff that
+/// compared the markup as it stands would find the whole document changed —
+/// which is the same trap the row patch fell into, and is why [`crate::protocol::Line`]
+/// does not compare its own source line either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Block {
+    pub at: Range<usize>,
     pub line: usize,
 }
 
@@ -65,6 +79,25 @@ pub struct TocItem {
 pub struct Page {
     pub title: String,
     pub body: String,
+    /// Every top-level block, in document order.
+    ///
+    /// This is what lets an edit be pushed to a browser as the two or three
+    /// blocks that moved rather than as the document: on a 1,800-line document
+    /// one keystroke was 264 KB of HTML, against 28 bytes for the same edit on
+    /// the terminal preview's side of the daemon.  Every entry is one element
+    /// once the browser has parsed it, which is the property `splittable`
+    /// exists to guarantee — the page splices by child index and has no way to
+    /// find out on its own that a block turned into two nodes.
+    #[serde(skip)]
+    pub blocks: Vec<Block>,
+    /// Whether `blocks` may be trusted as one-element-each.  False for a
+    /// document containing a raw HTML block or bare inline text at the top
+    /// level: the first can open a tag it closes three blocks later, the second
+    /// is not an element at all, and either way the page's child index stops
+    /// meaning what the daemon thinks it means.  Such a document is pushed
+    /// whole, which is what every document did before.
+    #[serde(skip)]
+    pub splittable: bool,
     pub toc: Vec<TocItem>,
 }
 
@@ -143,8 +176,10 @@ pub fn render(source: &str, opts: &Options) -> Page {
         line_starts: line_starts(source),
         anchors: HashMap::new(),
         notes: Vec::new(),
+        raw_html: false,
     };
 
+    let mut blocks: Vec<Block> = Vec::new();
     let mut cursor = 0usize;
     while cursor < events.len() {
         // A stray `End` at the top level closes nothing; stepping over it keeps
@@ -153,13 +188,44 @@ pub fn render(source: &str, opts: &Options) -> Page {
             cursor += 1;
             continue;
         }
+        let line = emitter.line_of(events[cursor].1.start);
+        let from = emitter.out.len();
         emitter.block(&events, &mut cursor);
+        // A block that emitted nothing — front matter with `frontmatter` off, a
+        // footnote definition on its way to the section at the end — is not a
+        // block the page has a child for.
+        if emitter.out.len() > from {
+            blocks.push(Block {
+                at: from..emitter.out.len(),
+                line,
+            });
+        }
     }
+    let from = emitter.out.len();
     emitter.footnote_section();
+    if emitter.out.len() > from {
+        // The section is not at any source line: it is assembled from
+        // definitions that were written all over the document.
+        blocks.push(Block {
+            at: from..emitter.out.len(),
+            line: 0,
+        });
+    }
+
+    // Every block has to be exactly one element for the page to be able to
+    // splice by child index.  Raw HTML is not: it goes out untouched, so it can
+    // be two elements, or half of one.  Bare inline at the top level is not an
+    // element at all.
+    let splittable = !emitter.raw_html
+        && blocks
+            .iter()
+            .all(|block| emitter.out[block.at.clone()].starts_with('<'));
 
     Page {
         title: emitter.title,
         body: emitter.out,
+        blocks,
+        splittable,
         toc: emitter.toc,
     }
 }
@@ -219,6 +285,8 @@ struct Emitter<'a> {
     /// same way in the browser and in the terminal.
     anchors: HashMap<String, usize>,
     notes: Vec<Note>,
+    /// Set when a raw HTML block has gone out verbatim; see [`Page::splittable`].
+    raw_html: bool,
 }
 
 // ─────────────────────────── block walk ───────────────────────────
@@ -357,7 +425,10 @@ impl Emitter<'_> {
                 *i += 1;
                 // Verbatim, and unwrapped: see the module comment.  It also
                 // means the block carries no `data-line`, which costs it a
-                // scroll-sync anchor and is the honest price of not touching it.
+                // scroll-sync anchor and is the honest price of not touching it
+                // — and it is why the document as a whole stops being pushed to
+                // the browser a block at a time; see [`Page::splittable`].
+                self.raw_html = true;
                 self.out.push_str(&raw);
             }
             Event::Start(Tag::MetadataBlock(_)) => {
@@ -436,7 +507,6 @@ impl Emitter<'_> {
             level,
             text,
             anchor,
-            line,
         });
     }
 
@@ -845,7 +915,7 @@ const KATEX_CSS: &str = "https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.
 const MATHJAX_JS: &str = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
 
 /// The whole page: shell, stylesheet, script and body in one response.
-pub fn document(page: &Page, opts: &PageOptions) -> String {
+pub fn document(page: &Page, opts: &PageOptions, seq: u64) -> String {
     let css = include_str!("assets/preview.css");
     let js = include_str!("assets/preview.js");
 
@@ -862,6 +932,7 @@ pub fn document(page: &Page, opts: &PageOptions) -> String {
     };
 
     let config = Config {
+        seq,
         live: opts.live,
         follow: opts.follow,
         sync_back: opts.sync_back,
@@ -913,6 +984,10 @@ pub fn document(page: &Page, opts: &PageOptions) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Config<'a> {
+    /// Which document the shell was built from.  The page tells the daemon on
+    /// connect, so a browser that has just been served the document is not
+    /// immediately sent it again down the stream.
+    seq: u64,
     live: bool,
     follow: bool,
     sync_back: bool,
@@ -952,9 +1027,16 @@ fn math_head(opts: &PageOptions) -> String {
             Some(stem) => format!("{stem}.css"),
             None => KATEX_CSS.to_string(),
         };
+        // `media="print"` until it has loaded, which is the standard way to
+        // fetch a stylesheet without blocking the first paint.  A plain
+        // stylesheet link in the head is render-blocking: with the CDN slow or
+        // unreachable — and this is the one resource on the page that is not
+        // served from this machine — the reader would sit in front of a blank
+        // tab until the request gave up, waiting on the typesetting of formulas
+        // the document may not even contain.
         push!(
             head,
-            "<link rel=\"stylesheet\" href=\"{}\">\n",
+            "<link rel=\"stylesheet\" href=\"{}\" media=\"print\" onload=\"this.media='all'\">\n",
             escape_attr(&css)
         );
     }
@@ -1246,7 +1328,6 @@ mod tests {
             "{}",
             page.body
         );
-        assert_eq!(page.toc[2].line, 5);
     }
 
     #[test]
@@ -1553,7 +1634,7 @@ mod tests {
             name: String::from("notes.md"),
             ..PageOptions::default()
         };
-        let out = document(&page, &opts);
+        let out = document(&page, &opts, 0);
         assert!(out.starts_with("<!DOCTYPE html>"));
         assert!(
             out.contains(include_str!("assets/preview.css")),
@@ -1578,7 +1659,7 @@ mod tests {
             sync_back: false,
             ..PageOptions::default()
         };
-        let out = document(&page, &opts);
+        let out = document(&page, &opts, 0);
         assert!(
             out.contains("<html lang=\"en\" data-theme=\"dark\" style=\"--sm-max-width: 720px\">"),
             "{out}"
@@ -1596,6 +1677,7 @@ mod tests {
                 max_width: 0,
                 ..PageOptions::default()
             },
+            0,
         );
         assert!(wide.contains("--sm-max-width: none"), "{wide}");
     }
@@ -1607,7 +1689,7 @@ mod tests {
         // the *page's* script along with it.
         let page = render("# a `</script>` and `<!--` heading\n", &Options::default());
         assert!(page.title.contains("</script>"), "{}", page.title);
-        let out = document(&page, &PageOptions::default());
+        let out = document(&page, &PageOptions::default(), 0);
         assert!(out.contains("window.SM = {"), "{out}");
         assert!(!out.contains("</script> and"), "{out}");
         assert!(!out.contains("<!--"), "{out}");
@@ -1630,6 +1712,7 @@ mod tests {
                 math: String::from("katex"),
                 ..PageOptions::default()
             },
+            0,
         );
         assert!(katex.contains("<script defer src=\"https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.js\"></script>"));
         assert!(katex.contains("katex.min.css"));
@@ -1643,6 +1726,7 @@ mod tests {
                 math_url: String::from("http://127.0.0.1:8000/mathjax.js"),
                 ..PageOptions::default()
             },
+            0,
         );
         assert!(
             mine.contains("<script defer src=\"http://127.0.0.1:8000/mathjax.js\"></script>"),

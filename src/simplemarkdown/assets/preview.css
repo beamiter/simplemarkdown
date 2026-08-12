@@ -1012,6 +1012,12 @@ tbody tr:nth-child(even) {
   background: var(--sm-warn);
 }
 
+/* Connected, but holding a document the daemon has moved past — the page said
+   so itself, having refused a patch it could not place. */
+.sm-dot.sm-stale {
+  background: var(--sm-warning);
+}
+
 .sm-dot.sm-dead {
   background: var(--sm-muted);
 }

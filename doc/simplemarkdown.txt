@@ -893,6 +893,32 @@ A buffer that has never been written is fine — it only needs a name, since its
 directory is what `![](./diagram.png)` resolves against and its name is what
 the tab is called.
 
+                                            *simplemarkdown-external-increment*
+What goes down the stream on a keystroke is the blocks that moved, not the
+document.  The daemon keeps the page it last sent, compares the new one block by
+block, and pushes a splice — the same shape, and for the same reason, as the
+patch the in-Vim preview is drawn from.  Measured on a 1,800-line document:
+typing inside a paragraph moved 264,130 bytes before and 327 after.
+
+Two things make that hold for the edits that matter.  Blocks are compared with
+their source lines *excluded*, so pressing `<CR>` — which renumbers every block
+below it and changes nothing else about any of them — is a splice of nothing
+plus one integer, rather than the whole document; and the page checks both that
+a patch names the document it is holding and that the splice left it with the
+number of blocks the daemon says it should have.  When either check fails the
+page reloads itself, which is the only way it has to ask for a fresh copy.
+
+The page the browser is served already carries the document, so the stream is
+told which one it is holding and opens by sending nothing rather than a copy of
+what is already on screen.
+
+A document containing a raw HTML block is pushed whole, every time.  Raw HTML
+goes out untouched — that is what makes it raw — so it can open a tag it closes
+three blocks later, and the page's blocks then stop corresponding to its own
+elements.  Nothing breaks; it is simply the cost of a document that mixes the
+two, and it is why a `<div>` around a badge in a README makes the preview of
+*that* file heavier than the preview of an ordinary one.
+
                                                  *simplemarkdown-external-sync*
 The cursor and the page are tied together the same way the two Vim windows are:
 moving in the source scrolls the page to the matching block and washes it for a
@@ -1039,7 +1065,9 @@ The browser preview does not follow my typing
     |simplemarkdown-external-save|.
 
 Maths shows as `$x^2$` in the browser
-    The typesetting engine is loaded from a CDN and did not arrive.  Point
+    The typesetting engine is loaded from a CDN and did not arrive.  The page
+    itself is not held up by it — the stylesheet is fetched without blocking
+    the first paint — so this is the only symptom.  Point
     |g:simplemarkdown_browser_math_url| at a mirror, or set
     |g:simplemarkdown_browser_math| to `'off'` and stop waiting for it.  The
     source stays on screen either way, which is the point of rendering it that

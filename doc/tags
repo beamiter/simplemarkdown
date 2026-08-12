@@ -75,6 +75,7 @@ simplemarkdown-configuration	simplemarkdown.txt	/*simplemarkdown-configuration*
 simplemarkdown-contents	simplemarkdown.txt	/*simplemarkdown-contents*
 simplemarkdown-daemon-cli	simplemarkdown.txt	/*simplemarkdown-daemon-cli*
 simplemarkdown-external	simplemarkdown.txt	/*simplemarkdown-external*
+simplemarkdown-external-increment	simplemarkdown.txt	/*simplemarkdown-external-increment*
 simplemarkdown-external-save	simplemarkdown.txt	/*simplemarkdown-external-save*
 simplemarkdown-external-sync	simplemarkdown.txt	/*simplemarkdown-external-sync*
 simplemarkdown-external-theme	simplemarkdown.txt	/*simplemarkdown-external-theme*
@@ -89,3 +90,4 @@ simplemarkdown-simplecore	simplemarkdown.txt	/*simplemarkdown-simplecore*
 simplemarkdown-troubleshooting	simplemarkdown.txt	/*simplemarkdown-troubleshooting*
 simplemarkdown-usage	simplemarkdown.txt	/*simplemarkdown-usage*
 simplemarkdown.txt	simplemarkdown.txt	/*simplemarkdown.txt*
+that	simplemarkdown.txt	/*that*
