@@ -62,7 +62,6 @@
   const STORE_PREFIX = 'simplemarkdown.preview.';
 
   const THEMES = ['auto', 'light', 'dark'];
-  const THEME_GLYPH = { auto: '◐', light: '☀', dark: '☾' };
   const THEME_TITLE = {
     auto: 'Theme: follow the system',
     light: 'Theme: light',
@@ -441,12 +440,8 @@
     themeBtn.dataset.state = theme;
     themeBtn.title = THEME_TITLE[theme];
     themeBtn.setAttribute('aria-label', THEME_TITLE[theme]);
-    // The glyph is only written when the button holds text.  Where the page
-    // shell put an <svg> in there instead, the stylesheet switches icons on
-    // [data-state] and overwriting the markup would throw the icons away.
-    if (!themeBtn.firstElementChild) {
-      themeBtn.textContent = THEME_GLYPH[theme];
-    }
+    // The glyph itself is not written: the shell puts an <svg> in the button
+    // and the stylesheet turns it on [data-state], which is set above.
   }
 
   function cycleTheme() {
@@ -507,9 +502,6 @@
       link.textContent = typeof entry.text === 'string' ? entry.text : entry.anchor;
       link.dataset.level = String(level);
       link.dataset.anchor = entry.anchor;
-      // A custom property as well as the attribute, so that the stylesheet can
-      // indent by arithmetic rather than by six selectors.
-      link.style.setProperty('--sm-toc-depth', String(Math.max(0, level - 1)));
       fragment.appendChild(link);
       tocLinks.set(entry.anchor, link);
       const heading = byId.get(entry.anchor);
@@ -706,15 +698,22 @@
   // or with the CDN blocked.  So the global is looked for every time, and its
   // absence is not an error: the raw `$…$` the daemon emitted is still a
   // perfectly readable formula.
-  function typesetMath(afterSettled) {
+  // `roots` are the elements that changed, or nothing for the whole document.
+  // A keystroke can only have touched the blocks the patch carried, and
+  // re-typesetting every formula in a paper to redraw the one that moved is the
+  // sort of work that shows up as the page going quiet while you type.
+  function typesetMath(afterSettled, roots) {
     if (!doc || SM.math === 'off') {
       return;
     }
+    const targets = roots && roots.length ? roots : [doc];
     try {
       if (SM.math === 'katex' && window.katex) {
-        renderKatex();
+        for (const root of targets) {
+          renderKatex(root);
+        }
       } else if (SM.math === 'mathjax' && window.MathJax && window.MathJax.typesetPromise) {
-        window.MathJax.typesetPromise([doc]).then(afterSettled || noop, noop);
+        window.MathJax.typesetPromise(targets).then(afterSettled || noop, noop);
       }
     } catch (err) {
       // A document is worth more than its formulae: a math engine that throws
@@ -722,8 +721,8 @@
     }
   }
 
-  function renderKatex() {
-    for (const el of doc.querySelectorAll('.sm-math')) {
+  function renderKatex(root) {
+    for (const el of root.querySelectorAll('.sm-math')) {
       const tex = el.dataset.tex;
       if (typeof tex !== 'string') {
         continue;
@@ -926,13 +925,16 @@
         trailing = next;
       }
     }
+    // Captured before the insert: a fragment's children move into the document
+    // and it is left empty, and these are what the maths has to be typeset in.
+    const inserted = Array.from(template.content.children);
     doc.insertBefore(template.content, before);
 
     seq = message.seq;
     patchable = doc.children.length === message.blocks;
     // Absent means unchanged, which on a keystroke inside a paragraph is the
     // ordinary case: neither the tab's name nor the rail has moved.
-    finishSwap(message.title, message.toc, anchor);
+    finishSwap(message.title, message.toc, anchor, inserted);
   }
 
   // A patch that cannot be applied means this page is holding a document the
@@ -1013,7 +1015,7 @@
     }
   }
 
-  function finishSwap(rawTitle, toc, anchor) {
+  function finishSwap(rawTitle, toc, anchor, roots) {
     const title = typeof rawTitle === 'string' && rawTitle ? rawTitle : SM.name;
     if (typeof rawTitle === 'string' && title) {
       document.title = title;
@@ -1027,7 +1029,7 @@
     // for the document as it stands, and once more when the engine has settled.
     typesetMath(function settled() {
       restoreAnchor(anchor);
-    });
+    }, roots);
     restoreAnchor(anchor);
   }
 

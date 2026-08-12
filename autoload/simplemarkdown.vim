@@ -1372,7 +1372,7 @@ def Apply(key: string, reply: dict<any>): bool
   # pixel — it is `x` toggling the wrong task and <CR> landing on the wrong
   # line — so it gets a checksum of its own.
   var src_sum = get(reply, 'src_sum', -1)
-  if src_sum >= 0 && src_sum != reduce(session.src_map, (running, src) => running + src, 0)
+  if src_sum >= 0 && src_sum != SourceSum(session.src_map)
     Log(printf('render %s: the source map does not match the daemon''s; resynchronising', key))
     session.rendered = false
     Schedule(key, 0)
@@ -1510,8 +1510,8 @@ def ApplyPatch(session: dict<any>, patch: dict<any>): bool
 
   ApplyProps(bufnr, rows, from)
 
-  session.lines = Splice(session.lines, from, del, text)
-  session.src_map = Splice(session.src_map, from, del, src_map)
+  SpliceInto(session.lines, from, del, text)
+  SpliceInto(session.src_map, from, del, src_map)
   return PatchSourceMap(session, patch)
 enddef
 
@@ -1539,7 +1539,7 @@ def PatchSourceMap(session: dict<any>, patch: dict<any>): bool
     if type(tail) != v:t_list || from - 1 + len(tail) != len(session.src_map)
       return false
     endif
-    session.src_map = (from > 1 ? session.src_map[0 : from - 2] : []) + tail
+    SpliceInto(session.src_map, from, len(session.src_map) - from + 1, tail)
     return true
   endif
   var delta = get(fix, 'd', 0)
@@ -1559,14 +1559,22 @@ def PatchSourceMap(session: dict<any>, patch: dict<any>): bool
 enddef
 
 
-# `list[from - 1 : from - 1 + del] = replacement`, spelled out because Vim's
-# slice indices are end-relative when negative and `list[0 : -1]` is not the
-# empty list.
-def Splice(list_: list<any>, from: number, del: number, replacement: list<any>): list<any>
-  var head = from > 1 ? list_[0 : from - 2] : []
-  var rest = from - 1 + del
-  var tail = rest < len(list_) ? list_[rest : ] : []
-  return head + replacement + tail
+# `list[from - 1 : from - 1 + del] = replacement`, in place.
+#
+# Spelled out because Vim's slice indices are end-relative when negative and
+# `list[0 : -1]` is not the empty list — and done with remove()/extend() rather
+# than by building `head + replacement + tail`, which allocated a fresh copy of
+# the whole document for each of the two lists on every patched keystroke:
+# measured at 0.21 ms each against 0.013 ms on a 4200-row document.  The lists
+# are the session's own and nothing else holds them; DebugSourceMap() hands out
+# a copy().
+def SpliceInto(list_: list<any>, from: number, del: number, replacement: list<any>)
+  if del > 0
+    remove(list_, from - 1, from - 2 + del)
+  endif
+  if !empty(replacement)
+    extend(list_, replacement, from - 1)
+  endif
 enddef
 
 
@@ -1609,6 +1617,21 @@ def ApplyProps(bufnr: number, rows: list<any>, first_row: number)
       Log(printf('prop_add_list(%s) failed: %s', class, v:exception))
     endtry
   endfor
+enddef
+
+
+# The checksum the daemon sends the map with.
+#
+# A `for` loop rather than reduce(): inside a compiled function reduce() pays a
+# lambda call per element, and this runs over the whole map on every patched
+# keystroke — 0.64 ms against 0.078 ms on a 4200-row document.  (Uncompiled the
+# comparison is the other way round, which is a good way to measure this wrong.)
+def SourceSum(src_map: list<number>): number
+  var sum = 0
+  for src in src_map
+    sum += src
+  endfor
+  return sum
 enddef
 
 

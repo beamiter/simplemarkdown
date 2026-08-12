@@ -1083,38 +1083,32 @@ tbody tr:nth-child(even) {
 }
 
 /*
- * Depth is accepted in either notation — a `data-level` attribute or an
- * `sm-toc-l*` class — so preview.js can build the nav whichever way reads
- * better there without a round trip to this file.
+ * Indented by `data-level`, which preview.js writes from the heading's own
+ * level.  There used to be an `.sm-toc-lN` class here beside each one, on the
+ * theory that the nav could be built either way; nothing has ever emitted one.
  */
-#sm-toc-list a[data-level="1"],
-#sm-toc-list a.sm-toc-l1 {
+#sm-toc-list a[data-level="1"] {
   padding-left: 0.5rem;
   font-weight: 600;
 }
 
-#sm-toc-list a[data-level="2"],
-#sm-toc-list a.sm-toc-l2 {
+#sm-toc-list a[data-level="2"] {
   padding-left: 1.25rem;
 }
 
-#sm-toc-list a[data-level="3"],
-#sm-toc-list a.sm-toc-l3 {
+#sm-toc-list a[data-level="3"] {
   padding-left: 2rem;
 }
 
-#sm-toc-list a[data-level="4"],
-#sm-toc-list a.sm-toc-l4 {
+#sm-toc-list a[data-level="4"] {
   padding-left: 2.75rem;
 }
 
-#sm-toc-list a[data-level="5"],
-#sm-toc-list a.sm-toc-l5 {
+#sm-toc-list a[data-level="5"] {
   padding-left: 3.5rem;
 }
 
-#sm-toc-list a[data-level="6"],
-#sm-toc-list a.sm-toc-l6 {
+#sm-toc-list a[data-level="6"] {
   padding-left: 4.25rem;
 }
 

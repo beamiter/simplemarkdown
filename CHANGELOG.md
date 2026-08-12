@@ -6,6 +6,30 @@ All notable changes to this project are documented here.  The format follows
 
 ## [Unreleased]
 
+### 收尾:几处按住不动就会一直付的钱
+
+- **`split_word` 对单个不可断的长串是二次的。** 每切出一块都用 `..run.clone()`
+  构造——那会把整个源 run 连同它的 `text` 复制一遍再把复制品丢掉。改成按字段构造:
+  75 KB 一个"词" 1.93 → 0.83 ms,600 KB 66.57 → **4.85 ms**。`tokenize` 里同样的
+  写法今天靠优化器消掉了(每个宽字符一次,中文段落尤其密),一并改掉,不再指望它。
+
+- **Vim 侧应用一个 patch 要把整篇文档走四遍。** 4200 行实测:两次
+  `head + replacement + tail` 各 0.21 ms(各自新建一份整篇的列表),`reduce()` 求
+  校验和 0.64 ms。改成 `remove()`/`extend()` 原地拼接(各 0.013 ms)和编译函数里
+  的 `for` 循环(0.078 ms),一次按键省约 1 ms。
+  注:`reduce()` 比 `for` 慢只在**编译过的** `def` 里成立,脚本层测反了——注释里
+  写明了,免得下次有人"优化"回去。
+
+- 数学只排版变动的块,不再每次按键把全文公式重排一遍。
+
+- `g:simplemarkdown_browser = 0` 时(SSH + 端口转发那种用法)预览地址用 `echo`
+  打印,进不了 `:messages`,一次重绘就没了——而那正是**唯一**拿得到端口的地方。
+  改成 `echom`。
+
+- 删掉真正的死代码:目录栏里六条从没被任何东西发出过的 `.sm-toc-lN` 选择器、
+  一个没人读的 `--sm-toc-depth`、一个到不了的主题图标兜底分支,以及 Vim 侧存了
+  却从不读的 `port`。
+
 ### 又一轮:缓存、解析口径与几处沉默的失败
 
 - **语法高亮缓存在 129 个 fenced block 上从命中跌到零。** 128 条 LRU + 命中提前

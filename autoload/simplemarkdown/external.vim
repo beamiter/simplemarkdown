@@ -316,7 +316,6 @@ def OnServed(bufnr: number, path: string, session: string, reply: dict<any>)
     # these can be noticed rather than silently ignored — the preview would go
     # on updating its text and obeying nothing else.
     page: PageOptions(),
-    port: get(reply, 'port', 0),
     timer: 0,
     last_line: 0,
     cursor_sent_ms: 0,
