@@ -24,8 +24,8 @@ use crate::inline::{self, HARD_BREAK, Laid, Run, Style, wrap};
 use crate::protocol::{BlockSpan, Line, LinkRef, Options, Prop, TocEntry};
 use crate::table::{self, Align, Table};
 use pulldown_cmark::{
-    Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, MetadataBlockKind,
-    Options as MdOptions, Parser, Tag, TagEnd,
+    Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, MetadataBlockKind, Parser, Tag,
+    TagEnd,
 };
 use std::collections::HashMap;
 use std::ops::Range;
@@ -45,19 +45,7 @@ pub struct Output {
 }
 
 pub fn render(source: &str, width: usize, opts: &Options) -> Output {
-    let mut md = MdOptions::empty();
-    md.insert(MdOptions::ENABLE_TABLES);
-    md.insert(MdOptions::ENABLE_FOOTNOTES);
-    md.insert(MdOptions::ENABLE_STRIKETHROUGH);
-    md.insert(MdOptions::ENABLE_TASKLISTS);
-    md.insert(MdOptions::ENABLE_HEADING_ATTRIBUTES);
-    md.insert(MdOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
-    md.insert(MdOptions::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
-    md.insert(MdOptions::ENABLE_DEFINITION_LIST);
-    md.insert(MdOptions::ENABLE_SUPERSCRIPT);
-    md.insert(MdOptions::ENABLE_SUBSCRIPT);
-    // GFM alerts (`> [!NOTE]`) ride on this flag.
-    md.insert(MdOptions::ENABLE_GFM);
+    let md = crate::md::options(false);
 
     let events: Vec<(Event, Range<usize>)> =
         Parser::new_ext(source, md).into_offset_iter().collect();

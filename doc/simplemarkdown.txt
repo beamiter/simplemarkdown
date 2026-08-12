@@ -720,6 +720,18 @@ Where to load that engine from, for a mirror or a copy on your own network.
 Empty uses jsDelivr.
 Default: ''
 
+                                                *g:simplemarkdown_browser_root*
+A second directory the preview may serve files from, in addition to the
+document's own — the repository, for prose in `docs/` that says
+`![](../assets/logo.png)`.  A browser resolves that against the page's address
+and clamps it, so what it asks for is `/assets/logo.png`, and only a directory
+with an `assets` in it can answer: name the tree, not the picture directory.
+
+Ignored, with a warning, unless |g:simplemarkdown_browser_host| is a loopback
+address: widening the tree is a reasonable thing to want on your own machine
+and a poor thing to do by accident on one the office can reach.
+Default: ''
+
                                            *g:simplemarkdown_browser_max_width*
 The page's text column, in CSS pixels.  Prose is hard to read at 200 columns in
 a browser for the same reason it is in a terminal, and a maximised window
@@ -925,8 +937,16 @@ moving in the source scrolls the page to the matching block and washes it for a
 moment.  |g:simplemarkdown_browser_sync_back| ties the other direction too.
 
 Images and other files referenced relatively are served from the document's
-directory and from nowhere else: a `../` in a URL is refused, which matters
-because |g:simplemarkdown_browser_host| can be told to bind a wildcard address.
+directory, and from |g:simplemarkdown_browser_root| when that is set; a path
+that leaves both is refused, lexically and again after the symlinks have been
+resolved, which matters because |g:simplemarkdown_browser_host| can be told to
+bind a wildcard address.
+
+|:SimpleMarkdownExternalStatic| has no directory to serve from, so it carries
+the pictures instead: every image under the document's directory goes into the
+file as a `data:` URI.  One that is very large, or that lives outside that
+directory, stays a relative link and will not resolve — a page cannot be more
+self-contained than the files it is allowed to read.
 
 |:SimpleMarkdownHealth| reports whether the daemon can serve and lists every URL
 currently being served.

@@ -244,6 +244,10 @@ const SETTINGS: list<dict<any>> = [
   # Prose is hard to read at 200 columns in a browser for the same reason it is
   # in a terminal, and a maximised window offers rather more than 200.
   {name: 'simplemarkdown_browser_max_width', kind: 'number', default: 900, min: 480, max: 2400},
+  # A second directory the preview may serve files from — the repository, for a
+  # document that says `![](../assets/logo.png)`.  Empty is the document's own
+  # directory and nothing else, and it is ignored on a non-loopback bind.
+  {name: 'simplemarkdown_browser_root', kind: 'string', default: ''},
 ]
 
 final SETTING_BY_NAME: dict<dict<any>> = {}
@@ -2076,6 +2080,10 @@ enddef
 
 export def Refresh(all: bool = false)
   PruneSessions()
+  # The browser preview is refreshed by the same command, and the thing it can
+  # be stale about is not the document — that follows the buffer — but the
+  # options it was opened with.
+  simplemarkdown#external#OnOptionsChanged()
   if all
     for session_key in keys(sessions)
       Schedule(session_key, 0)
@@ -3268,10 +3276,22 @@ def CacheOutline(buf: number, tick: number, entries: list<any>)
   if tick < getbufvar(buf, 'simplemarkdown_outline_tick', -1)
     return
   endif
+  var previous = getbufvar(buf, 'simplemarkdown_outline', [])
+  var count = get(getbufinfo(buf), 0, {linecount: 0}).linecount
   setbufvar(buf, 'simplemarkdown_outline', entries)
   setbufvar(buf, 'simplemarkdown_outline_tick', tick)
-  var count = get(getbufinfo(buf), 0, {linecount: 0}).linecount
+  # The folds are a function of the heading tree and the line count, so when
+  # neither moved there is nothing to rebuild and — more to the point — nothing
+  # to invalidate.  The invalidation below costs one foldexpr call per line of
+  # the buffer, and most edits do not touch a heading: typing inside a paragraph
+  # of a 3800-line document was paying 58 ms of Vim to be told the folds it
+  # already had.
+  if getbufvar(buf, 'simplemarkdown_folds_lines', -1) == count
+      && type(previous) == v:t_list && previous == entries
+    return
+  endif
   setbufvar(buf, 'simplemarkdown_folds', BuildFolds(entries, count))
+  setbufvar(buf, 'simplemarkdown_folds_lines', count)
   # Vim caches what foldexpr answered and only asks again when the buffer
   # changes.  This answer arrived without one, so nothing would ask.
   #

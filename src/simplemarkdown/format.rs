@@ -25,7 +25,7 @@
 //! gains the separator it was missing, and the delimiter row's dashes are re-run
 //! to the new widths.  See `a_run_moves_cells_without_changing_any_of_them`.
 
-use pulldown_cmark::{Alignment, Event, Options as MdOptions, Parser, Tag};
+use pulldown_cmark::{Alignment, Event, Parser, Tag};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
 
@@ -56,11 +56,7 @@ pub fn table_at(lines: &[String], line: usize) -> Option<Replacement> {
         }
     };
 
-    let mut md = MdOptions::empty();
-    md.insert(MdOptions::ENABLE_TABLES);
-    md.insert(MdOptions::ENABLE_STRIKETHROUGH);
-    md.insert(MdOptions::ENABLE_TASKLISTS);
-    md.insert(MdOptions::ENABLE_GFM);
+    let md = crate::md::options(false);
 
     for (event, range) in Parser::new_ext(&source, md).into_offset_iter() {
         let Event::Start(Tag::Table(aligns)) = event else {

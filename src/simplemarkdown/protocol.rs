@@ -135,6 +135,17 @@ pub enum Request {
         #[serde(default)]
         line: usize,
     },
+    /// New page options for a running preview: a theme, a text column, whether
+    /// it follows the cursor.  Unanswered, like the others — what the editor
+    /// wants to know is whether the *page* changed, and the page is the far end
+    /// of a socket it is not holding.
+    #[serde(rename = "serve_opts")]
+    ServeOpts {
+        #[serde(default)]
+        session: String,
+        #[serde(default)]
+        page: PageOptions,
+    },
     /// Move a running preview to a source line.  Separate from `serve_update`
     /// because moving the cursor does not change the document, and re-rendering
     /// it to say so would be the most expensive way to scroll a page.
@@ -174,6 +185,11 @@ pub struct ServeRequest {
     pub path: String,
     #[serde(default)]
     pub lines: Vec<String>,
+    /// A second directory assets may be served from, for a document that
+    /// references `../assets/logo.png`.  Empty for the document's own and
+    /// nothing else, and honoured only on a loopback bind.
+    #[serde(default)]
+    pub root: String,
     #[serde(default = "loopback")]
     pub host: String,
     /// The first port to try; one already in use moves the search up.

@@ -6,6 +6,45 @@ All notable changes to this project are documented here.  The format follows
 
 ## [Unreleased]
 
+### 又一轮:缓存、解析口径与几处沉默的失败
+
+- **语法高亮缓存在 129 个 fenced block 上从命中跌到零。** 128 条 LRU + 命中提前
+  ——而渲染是从头到尾扫一遍文档,这正是 LRU 最差的访问模式:超出容量后,每次要找的
+  那条刚好被它后面那条挤掉。实测稳态渲染:
+
+  | fenced block 数 | 之前 | 现在 |
+  |--:|--:|--:|
+  | 128 | 0.45 ms | 0.48 ms |
+  | 129 | **11.12 ms** | 0.47 ms |
+  | 200 | 17.17 ms | 0.70 ms |
+  | 400 | 35.44 ms | 1.35 ms |
+
+  换成按字节记账、按到达顺序淘汰的 map,顺带把每次查找的 128 次线性比较也去掉了。
+
+- **六份手抄的 CommonMark 选项集合并成一份**(新的 `md.rs`)。它们已经漂成三套:
+  `lint.rs` / `edit.rs` 少四个 flag,`format.rs` 少七个。后果是活的——写在 `+++`
+  front matter 里的 `# Draft`,对 linter 是标题、对两个预览都是散文,于是
+  `[it](#draft)` 这样一条**坏链接被唯一负责报坏链接的东西放过了**。现在会报。
+
+- **`:SimpleMarkdownExternalStatic` 写出的页面现在真的自包含**:文档目录下的图片
+  以 `data:` URI 写进文件。此前相对路径的图片在临时目录里一律是坏的——文件还没被
+  搬走就已经坏了。目录之外或过大的图片仍是相对链接,help 里写清楚了。
+
+- **`g:simplemarkdown_browser_root`**:再指一棵可以取文件的目录树,给
+  `docs/` 里写 `![](../assets/logo.png)` 的仓库。浏览器会把 `../` 夹到根,所以要
+  指的是仓库而不是图片目录。只在 loopback 绑定时生效,否则警告并忽略。
+
+- **改了选项而预览一声不吭的问题。** 主题、正文宽度、是否跟随光标现在由
+  `:SimpleMarkdownRefresh` 推给已经打开的页面(读者自己在页面上的选择优先);
+  `math` 和 `sync_back` 改不了活页面,于是明说一句要重开。
+
+- 预览还在启动时 `:SimpleMarkdownExternalClose` 会说"没有预览可关",然后过一会儿
+  照样弹出浏览器——现在会撤销那次 `serve`,`:SimpleMarkdownExternal` 也不会再开出
+  第二个。
+
+- 开着折叠时,每次去抖后的按键都会让 Vim 重算整篇文档的 foldexpr(3840 行实测
+  6.2 ms);标题树和行数都没动时不再触发,这类编辑的开销归零。
+
 ### 浏览器预览:只推动过的块
 
 - **一次按键送的是变动的块,不是整篇文档。** daemon 留着上一次送出的页面,逐块

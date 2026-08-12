@@ -348,9 +348,18 @@
   // whether the preview chases the cursor is the plugin's setting, and a reader
   // who turned it off for one document should not find it off in every session
   // after this one.
+  // Set when the reader works the switch themselves, so that a setting the
+  // editor changes later does not take it back off them.
+  let followTouched = false;
+
   function setFollow(on) {
     following = on;
     setPressed(followBtn, following);
+  }
+
+  function toggleFollow(on) {
+    followTouched = true;
+    setFollow(on);
   }
 
   function onEditorLine(line) {
@@ -817,6 +826,8 @@
       applyDoc(message);
     } else if (message.k === 'patch') {
       applyPatch(message);
+    } else if (message.k === 'opts') {
+      applyOpts(message);
     } else if (message.k === 'line') {
       onEditorLine(message.line);
     } else if (message.k === 'bye') {
@@ -977,6 +988,22 @@
     }
   }
 
+  // The editor changed a setting while this page was open.  Only what a page
+  // already built can take: the theme, the text column and whether it follows
+  // the cursor.  The reader's own choices win over all three — they were made
+  // later, and from in front of the document.
+  function applyOpts(message) {
+    if (typeof message.theme === 'string' && !stored('theme')) {
+      applyTheme(message.theme);
+    }
+    if (Number.isFinite(message.max_width) && message.max_width > 0) {
+      document.documentElement.style.setProperty('--sm-max-width', message.max_width + 'px');
+    }
+    if (typeof message.follow === 'boolean' && !followTouched) {
+      setFollow(message.follow);
+    }
+  }
+
   function shiftElement(el, delta) {
     const had = Number(el.dataset.line);
     // An element that came from no particular source line — the footnote
@@ -1022,7 +1049,7 @@
     if (event.key === 't') {
       toggleToc();
     } else if (event.key === 'f') {
-      setFollow(!following);
+      toggleFollow(!following);
     } else if (event.key === 'd') {
       cycleTheme();
     } else {
@@ -1070,8 +1097,8 @@
     tocBtn.addEventListener('click', toggleToc);
   }
   if (followBtn) {
-    followBtn.addEventListener('click', function toggleFollow() {
-      setFollow(!following);
+    followBtn.addEventListener('click', function onFollowClick() {
+      toggleFollow(!following);
     });
   }
   if (themeBtn) {

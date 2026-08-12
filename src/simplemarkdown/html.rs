@@ -32,10 +32,7 @@
 use crate::classes;
 use crate::highlight;
 use crate::render::slug;
-use pulldown_cmark::{
-    Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options as MdOptions, Parser,
-    Tag,
-};
+use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Parser, Tag};
 use serde::Serialize;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -124,7 +121,7 @@ impl Default for Options {
 /// Separate from [`Options`] because a re-render pushes a new [`Page`] down an
 /// SSE stream that the shell outlives: everything here was decided once, when
 /// the browser was opened, and nothing here may change without a reload.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageOptions {
     /// File name, for `<title>` and for the bar.
     pub name: String,
@@ -164,7 +161,10 @@ type Events<'a> = [(Event<'a>, Range<usize>)];
 /// Everything a re-render can change is in here; everything it cannot is in
 /// [`document`].
 pub fn render(source: &str, opts: &Options) -> Page {
-    let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, md_options(opts))
+    let events: Vec<(Event, Range<usize>)> = // The same option set every other walker parses with, plus maths when asked
+    // for: the two previews disagreeing about what the document *is* would be
+    // worse than either of them being wrong on its own.
+    Parser::new_ext(source, crate::md::options(opts.math))
         .into_offset_iter()
         .collect();
 
@@ -228,29 +228,6 @@ pub fn render(source: &str, opts: &Options) -> Page {
         splittable,
         toc: emitter.toc,
     }
-}
-
-/// The same option set the terminal renderer builds, plus maths when asked
-/// for.  The two previews disagreeing about what the document *is* would be
-/// worse than either of them being wrong on its own.
-fn md_options(opts: &Options) -> MdOptions {
-    let mut md = MdOptions::empty();
-    md.insert(MdOptions::ENABLE_TABLES);
-    md.insert(MdOptions::ENABLE_FOOTNOTES);
-    md.insert(MdOptions::ENABLE_STRIKETHROUGH);
-    md.insert(MdOptions::ENABLE_TASKLISTS);
-    md.insert(MdOptions::ENABLE_HEADING_ATTRIBUTES);
-    md.insert(MdOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
-    md.insert(MdOptions::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
-    md.insert(MdOptions::ENABLE_DEFINITION_LIST);
-    md.insert(MdOptions::ENABLE_SUPERSCRIPT);
-    md.insert(MdOptions::ENABLE_SUBSCRIPT);
-    // GFM alerts (`> [!NOTE]`) ride on this flag.
-    md.insert(MdOptions::ENABLE_GFM);
-    if opts.math {
-        md.insert(MdOptions::ENABLE_MATH);
-    }
-    md
 }
 
 /// Byte offset of the start of every source line, for offset → line lookup.

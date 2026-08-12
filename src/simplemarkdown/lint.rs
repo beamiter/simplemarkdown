@@ -22,7 +22,7 @@
 //! diagnostic a user cannot look up is one they cannot act on.
 
 use crate::protocol::LintItem;
-use pulldown_cmark::{Event, HeadingLevel, Options as MdOptions, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
@@ -61,14 +61,7 @@ const WARN: &str = "W";
 const INFO: &str = "I";
 
 pub fn lint(source: &str) -> Vec<LintItem> {
-    let mut md = MdOptions::empty();
-    md.insert(MdOptions::ENABLE_TABLES);
-    md.insert(MdOptions::ENABLE_FOOTNOTES);
-    md.insert(MdOptions::ENABLE_STRIKETHROUGH);
-    md.insert(MdOptions::ENABLE_TASKLISTS);
-    md.insert(MdOptions::ENABLE_HEADING_ATTRIBUTES);
-    md.insert(MdOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
-    md.insert(MdOptions::ENABLE_GFM);
+    let md = crate::md::options(false);
 
     let events: Vec<(Event, Range<usize>)> =
         Parser::new_ext(source, md).into_offset_iter().collect();
@@ -359,6 +352,25 @@ mod tests {
 
     fn codes_of(source: &str) -> Vec<&'static str> {
         lint(source).into_iter().map(|item| item.code).collect()
+    }
+
+    /// The linter and the previews have to read the same document.  They did
+    /// not: six hand-copied option sets had drifted, and this file's was
+    /// missing `+++` front matter — so a `# Draft` written inside it was a
+    /// heading here and prose everywhere else, and a link to it was accepted by
+    /// the one thing whose job is to say that links are broken.
+    #[test]
+    fn front_matter_is_not_a_place_to_hide_a_heading() {
+        let source = "+++\ntitle = \"Notes\"\n# Draft\n+++\n\n# Real\n\nSee [it](#draft) and [real](#real).\n";
+        assert_eq!(codes_of(source), vec![codes::BROKEN_ANCHOR]);
+        assert_eq!(
+            crate::outline::outline(&source.lines().map(str::to_string).collect::<Vec<_>>())
+                .iter()
+                .map(|entry| entry.anchor.as_str())
+                .collect::<Vec<_>>(),
+            vec!["real"],
+            "and the outline agrees about which headings exist"
+        );
     }
 
     #[test]

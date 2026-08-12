@@ -33,6 +33,7 @@ g:simplemarkdown_browser_math	simplemarkdown.txt	/*g:simplemarkdown_browser_math
 g:simplemarkdown_browser_math_url	simplemarkdown.txt	/*g:simplemarkdown_browser_math_url*
 g:simplemarkdown_browser_max_width	simplemarkdown.txt	/*g:simplemarkdown_browser_max_width*
 g:simplemarkdown_browser_port	simplemarkdown.txt	/*g:simplemarkdown_browser_port*
+g:simplemarkdown_browser_root	simplemarkdown.txt	/*g:simplemarkdown_browser_root*
 g:simplemarkdown_browser_sync	simplemarkdown.txt	/*g:simplemarkdown_browser_sync*
 g:simplemarkdown_browser_sync_back	simplemarkdown.txt	/*g:simplemarkdown_browser_sync_back*
 g:simplemarkdown_browser_theme	simplemarkdown.txt	/*g:simplemarkdown_browser_theme*

@@ -103,8 +103,14 @@ pub struct Config {
     pub port: u16,
     /// How far above `port` to look before giving up.
     pub attempts: u16,
-    /// The document's directory: the only place an asset may come from.
+    /// The document's directory: where an asset may come from.
     pub root: PathBuf,
+    /// A second tree, also served at `/`.  For a repository that keeps its
+    /// prose in one directory and its pictures in another, this is the
+    /// repository: a browser resolves `../assets/logo.png` against the page's
+    /// URL and clamps it, so what it asks for is `/assets/logo.png`, and only a
+    /// root with an `assets` in it can answer.  None by default.
+    pub extra_root: Option<PathBuf>,
     pub page: Page,
     pub page_opts: PageOptions,
 }
@@ -126,10 +132,15 @@ struct Snapshot {
 }
 
 struct State {
-    /// Canonicalised, because a static path is only safe if the prefix it is
-    /// compared against is real too.
-    root: PathBuf,
-    opts: PageOptions,
+    /// Every directory a file may be served from, canonicalised — because a
+    /// static path is only safe if the prefix it is compared against is real
+    /// too.  The document's own is always the first; a second is there only
+    /// when the user asked for one, and only on a loopback bind.
+    roots: Vec<PathBuf>,
+    /// Behind a lock because the editor can change them while a page is open —
+    /// a theme, a text column — and the shell a reload is served has to be the
+    /// current one.
+    opts: Mutex<PageOptions>,
     snapshot: Mutex<Arc<Snapshot>>,
     events: broadcast::Sender<Arc<str>>,
     /// `None` when the user has turned sync-back off, which is what makes
@@ -162,6 +173,7 @@ impl Server {
             port,
             attempts,
             root,
+            extra_root,
             page,
             page_opts,
         } = config;
@@ -185,8 +197,11 @@ impl Server {
             // next to.  A directory that cannot be canonicalised — a buffer
             // whose directory has been deleted underneath it — still serves
             // the page; only its assets are lost, and they were lost anyway.
-            root: root.canonicalize().unwrap_or(root),
-            opts: page_opts,
+            roots: std::iter::once(root)
+                .chain(extra_root)
+                .map(|dir| dir.canonicalize().unwrap_or(dir))
+                .collect(),
+            opts: Mutex::new(page_opts),
             snapshot: Mutex::new(Arc::new(Snapshot {
                 doc: Arc::from(doc_frame(&page, 0)),
                 page,
@@ -264,6 +279,25 @@ impl Server {
         // opened the tab yet — and the browser that arrives next is handed the
         // snapshot on connect.
         let _ = self.state.events.send(payload);
+    }
+
+    /// Take new page options.  What a page already open can apply goes down the
+    /// stream; the rest is waiting for the next reload, which is why the shell
+    /// is built from these too.
+    pub fn set_opts(&self, opts: PageOptions) {
+        let mut held = lock(&self.state.opts);
+        if *held == opts {
+            return;
+        }
+        let frame = frame(&OptsEvent {
+            k: "opts",
+            theme: &opts.theme,
+            max_width: opts.max_width,
+            follow: opts.follow,
+        });
+        *held = opts;
+        drop(held);
+        let _ = self.state.events.send(Arc::from(frame));
     }
 
     /// Push a scroll position.
@@ -353,6 +387,20 @@ struct PatchEvent<'a> {
     title: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     toc: Option<&'a [TocItem]>,
+}
+
+/// The page options a running page can take without being reloaded.
+///
+/// Deliberately not all of them: `math` decides which engine the *shell* loads
+/// and `sync_back` decides whether this server answers `POST /cursor` at all,
+/// and neither is a thing an open page can be talked into.  The editor says so
+/// rather than pretending.
+#[derive(Serialize)]
+struct OptsEvent<'a> {
+    k: &'static str,
+    theme: &'a str,
+    max_width: usize,
+    follow: bool,
 }
 
 #[derive(Serialize)]
@@ -679,7 +727,7 @@ async fn handle(stream: &mut TcpStream, state: &State) -> io::Result<()> {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => {
             let snapshot = current(state);
-            let page = document(&snapshot.page, &state.opts, snapshot.seq);
+            let page = document(&snapshot.page, &lock(&state.opts).clone(), snapshot.seq);
             respond(stream, OK, "text/html; charset=utf-8", page.as_bytes()).await
         }
         ("GET", "/events") => events(stream, state, already_has(&request.query)).await,
@@ -790,20 +838,35 @@ async fn cursor(
 // ─────────────────────────── assets ───────────────────────────
 
 async fn asset(stream: &mut TcpStream, state: &State, path: &str) -> io::Result<()> {
-    let Some(candidate) = safe_join(&state.root, path) else {
-        return respond_text(stream, NOT_FOUND, "not found").await;
-    };
-    let root = state.root.clone();
+    let roots = state.roots.clone();
+    let path = path.to_string();
     // On the blocking pool for the same reason a render is: this thread is also
     // driving the event streams of every other browser looking at the document.
     let read = tokio::task::spawn_blocking(move || -> io::Result<(PathBuf, Vec<u8>)> {
-        let real = candidate.canonicalize()?;
-        // The lexical check in `safe_join` cannot see a symlink: `logo.png`
-        // next to the document may point at `~/.ssh/id_rsa`, and this server
-        // may be bound to an address the rest of the office can reach.
-        if !real.starts_with(root.as_path()) {
-            return Err(io::Error::other("outside the document's directory"));
+        // Each root is a tree served at `/`, tried in turn, and a file has to
+        // be inside the one it was joined to.  A browser resolves
+        // `../assets/logo.png` against the page's URL and clamps it at the
+        // root, so what arrives is `/assets/logo.png` — which only means
+        // anything if some root has an `assets` in it.  The document's own
+        // directory is first, so a name it holds always wins.
+        let mut found = None;
+        for root in &roots {
+            let Some(candidate) = safe_join(root, &path) else {
+                continue;
+            };
+            let Ok(real) = candidate.canonicalize() else {
+                continue;
+            };
+            // The lexical check in `safe_join` cannot see a symlink: `logo.png`
+            // next to the document may point at `~/.ssh/id_rsa`, and this
+            // server may be bound to an address the rest of the office can
+            // reach.
+            if real.starts_with(root) {
+                found = Some(real);
+                break;
+            }
         }
+        let real = found.ok_or_else(|| io::Error::other("outside the directories being served"))?;
         if real.metadata()?.len() > MAX_FILE {
             return Err(io::Error::other("too large to serve"));
         }
@@ -830,7 +893,7 @@ async fn asset(stream: &mut TcpStream, state: &State, path: &str) -> io::Result<
 /// absolute after that (`//etc/passwd`, `/%2Fetc%2Fpasswd`), any `..`, any
 /// Windows drive prefix and anything that does not decode to UTF-8 is refused
 /// outright rather than normalised into something plausible.
-fn safe_join(root: &Path, target: &str) -> Option<PathBuf> {
+pub(crate) fn safe_join(root: &Path, target: &str) -> Option<PathBuf> {
     let decoded = percent_decode(target.strip_prefix('/')?)?;
     if decoded.is_empty() || decoded.contains('\0') {
         return None;
@@ -849,7 +912,7 @@ fn safe_join(root: &Path, target: &str) -> Option<PathBuf> {
 ///
 /// `+` is left alone: it means a space in a query string and nothing at all in
 /// a path, and `a+b.png` is a file people really do have.
-fn percent_decode(text: &str) -> Option<String> {
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -876,7 +939,7 @@ fn percent_decode(text: &str) -> Option<String> {
 /// Enough of a MIME table for what a Markdown document links to.  Everything
 /// else is `application/octet-stream`, which browsers download rather than
 /// guess at — the right answer for a file this server does not understand.
-fn content_type(path: &Path) -> &'static str {
+pub(crate) fn content_type(path: &Path) -> &'static str {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -1122,6 +1185,7 @@ mod tests {
             port: 0,
             attempts: 4,
             root: std::env::temp_dir(),
+            extra_root: None,
             page: page(),
             page_opts: options(sync_back),
         }
@@ -1468,6 +1532,63 @@ mod tests {
             }
         }
         assert!(freed, "the port was still held a second after stop()");
+    }
+
+    /// A second directory, for the layout most repositories have: prose in one
+    /// place, pictures in another.  Offered only when the user asked for it —
+    /// and the guard that keeps everything else out has to keep working.
+    #[tokio::test]
+    async fn a_second_root_is_served_and_nothing_else_is() {
+        let base =
+            std::env::temp_dir().join(format!("simplemarkdown-roots-{}", std::process::id()));
+        let notes = base.join("notes");
+        let assets = base.join("assets");
+        std::fs::create_dir_all(&notes).expect("a document directory");
+        std::fs::create_dir_all(&assets).expect("an asset directory");
+        std::fs::write(assets.join("logo.png"), b"\x89PNG\r\n\x1a\n").expect("a picture");
+        std::fs::write(
+            std::env::temp_dir().join(format!("simplemarkdown-outside-{}", std::process::id())),
+            b"not yours",
+        )
+        .expect("a file above both roots");
+
+        std::fs::write(notes.join("near.png"), b"\x89PNG\r\n\x1a\n").expect("a local picture");
+
+        let mut settings = config(false);
+        settings.root = notes.clone();
+        // The repository, not the picture directory: the URL the browser sends
+        // is `/assets/logo.png`, and it is this tree that has an `assets` in it.
+        settings.extra_root = Some(base.clone());
+        let server = Server::start(settings).await.expect("binds a port");
+
+        let found = ask(
+            server.port(),
+            "GET /assets/logo.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        )
+        .await;
+        assert!(found.starts_with("HTTP/1.1 200"), "{found}");
+        assert!(found.contains("Content-Type: image/png"), "{found}");
+
+        // The document's own directory is still tried first.
+        let near = ask(
+            server.port(),
+            "GET /near.png HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        )
+        .await;
+        assert!(near.starts_with("HTTP/1.1 200"), "{near}");
+
+        // And nothing above either root, however it is spelled.
+        for target in ["/../outside.txt", "/%2e%2e%2foutside.txt", "//etc/passwd"] {
+            let refused = ask(
+                server.port(),
+                &format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"),
+            )
+            .await;
+            assert!(refused.starts_with("HTTP/1.1 404"), "{target}: {refused}");
+        }
+
+        server.stop();
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// The `Host` check, which is the whole of this server's defence against

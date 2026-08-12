@@ -15,28 +15,12 @@
 
 use crate::protocol::OutlineEntry;
 use crate::render::slug;
-use pulldown_cmark::{Event, HeadingLevel, Options as MdOptions, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use std::collections::HashMap;
 
 pub fn outline(lines: &[String]) -> Vec<OutlineEntry> {
     let source = lines.join("\n");
-    let mut md = MdOptions::empty();
-    md.insert(MdOptions::ENABLE_TABLES);
-    md.insert(MdOptions::ENABLE_FOOTNOTES);
-    md.insert(MdOptions::ENABLE_STRIKETHROUGH);
-    md.insert(MdOptions::ENABLE_TASKLISTS);
-    md.insert(MdOptions::ENABLE_HEADING_ATTRIBUTES);
-    md.insert(MdOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
-    // The four the renderers set and this used to leave out.  A parser told
-    // less than they were told reads a different document: `+++` front matter
-    // becomes a paragraph, so a `# ...` inside it becomes a heading, and the
-    // outline grows a section the preview has never drawn — with a `foldexpr`
-    // and the section motions behind it.
-    md.insert(MdOptions::ENABLE_PLUSES_DELIMITED_METADATA_BLOCKS);
-    md.insert(MdOptions::ENABLE_DEFINITION_LIST);
-    md.insert(MdOptions::ENABLE_SUPERSCRIPT);
-    md.insert(MdOptions::ENABLE_SUBSCRIPT);
-    md.insert(MdOptions::ENABLE_GFM);
+    let md = crate::md::options(false);
 
     let mut starts = vec![0usize];
     starts.extend(source.match_indices('\n').map(|(index, _)| index + 1));

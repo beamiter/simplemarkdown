@@ -13,6 +13,7 @@ mod highlight;
 mod html;
 mod inline;
 mod lint;
+mod md;
 mod outline;
 mod protocol;
 mod render;
@@ -174,6 +175,9 @@ fn stalest_session(sessions: &HashMap<String, Session>) -> Option<String> {
 /// explicitly rather than dropped when a task ends.
 struct Preview {
     server: serve::Server,
+    /// The document's file name, for rebuilding the page options when the
+    /// editor changes one of them.
+    name: String,
     /// What the page was started with.  An update re-renders with the same
     /// options rather than carrying them again on every keystroke.
     opts: html::Options,
@@ -595,6 +599,17 @@ async fn serve() -> std::io::Result<()> {
             } => {
                 tokio::spawn(serve_update(session, lines, line, previews.clone()));
             }
+            Request::ServeOpts { session, page } => {
+                let mut table = previews.lock().await;
+                if let Some(preview) = table.get_mut(&session) {
+                    // The document options can change too — syntax off, front
+                    // matter hidden — and those need a re-render, which the
+                    // next `serve_update` does with the options stored here.
+                    preview.opts = html_options(&page);
+                    let name = preview.name.clone();
+                    preview.server.set_opts(page_options(name, &page));
+                }
+            }
             Request::ServeCursor { session, line } => {
                 if let Some(preview) = previews.lock().await.get(&session) {
                     preview.server.cursor(line);
@@ -791,7 +806,13 @@ fn page_options(name: String, page: &PageOptions) -> html::PageOptions {
     }
 }
 
-/// The document's directory — the only one the server will hand a file out of —
+/// Whether this bind is reachable only from this machine.  A second asset
+/// directory is offered on that condition and no other.
+fn is_loopback(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
+}
+
+/// The document's directory — the first one the server will hand a file out of —
 /// and the name to put in the title bar.
 fn document_root(path: &str) -> (PathBuf, String) {
     let path = PathBuf::from(path);
@@ -844,8 +865,13 @@ async fn serve_start(request: ServeRequest, previews: Previews, tx: mpsc::Sender
         port: request.port,
         attempts: request.attempts.max(1),
         root,
+        // Widened only on a loopback bind: the editor checks that too, and a
+        // setting that quietly turned a shared preview into a file server for
+        // the directory above the document is not a setting anybody asked for.
+        extra_root: (!request.root.is_empty() && is_loopback(&request.host))
+            .then(|| PathBuf::from(&request.root)),
         page,
-        page_opts: page_options(name, &request.page),
+        page_opts: page_options(name.clone(), &request.page),
     };
     let mut server = match serve::Server::start(config).await {
         Ok(server) => server,
@@ -911,6 +937,7 @@ async fn serve_start(request: ServeRequest, previews: Previews, tx: mpsc::Sender
                 session.clone(),
                 Preview {
                     server,
+                    name,
                     opts,
                     epoch: next_epoch(),
                     issued: 0,
@@ -988,16 +1015,121 @@ async fn serve_update(session: String, lines: Vec<String>, line: usize, previews
 
 async fn html_once(request: HtmlRequest, tx: mpsc::Sender<String>) {
     let id = request.id;
-    let (_, name) = document_root(&request.path);
+    let (root, name) = document_root(&request.path);
     let opts = html_options(&request.page);
     let page_opts = page_options(name, &request.page);
     match render_page(request.lines.join("\n"), opts).await {
-        Ok(page) => {
+        Ok(mut page) => {
+            let body = std::mem::take(&mut page.body);
+            // Reading files is blocking work, and a page full of screenshots is
+            // several megabytes of it.
+            page.body = tokio::task::spawn_blocking(move || inline_images(&root, body))
+                .await
+                .unwrap_or_default();
             let html = html::document(&page, &page_opts, 0);
             send(&tx, Event::HtmlResult { id, html }).await;
         }
         Err(message) => send(&tx, Event::Error { id, message }).await,
     }
+}
+
+/// The largest picture worth carrying inside the page, and the most the page
+/// may carry in total.
+///
+/// This is a file somebody is going to open from a temporary directory, keep,
+/// or mail.  A relative `src` in it points at nothing — the picture is beside
+/// the *document*, which is somewhere else — so the picture travels or it is
+/// broken, and there is no third answer.  The caps are what keeps "self
+/// contained" from meaning "forty megabytes of screenshots".
+const INLINE_MAX_FILE: u64 = 4 * 1024 * 1024;
+const INLINE_MAX_TOTAL: usize = 16 * 1024 * 1024;
+
+/// Rewrite every `src="…"` that names a readable file under `root` as a `data:`
+/// URI, so the one-shot page carries its pictures the way it already carries
+/// its stylesheet.
+///
+/// Deliberately only `src`: an `href` is a link, and a link that led somewhere
+/// on the author's disk is more useful left alone than turned into a copy of
+/// whatever was there.  A path that leaves `root` is refused by the same guard
+/// the server uses, for the same reason.
+fn inline_images(root: &Path, body: String) -> String {
+    const ATTR: &str = " src=\"";
+    if !body.contains(ATTR) {
+        return body;
+    }
+    let body = body.as_str();
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    let mut budget = INLINE_MAX_TOTAL;
+    while let Some(at) = rest.find(ATTR) {
+        let after = at + ATTR.len();
+        let Some(end) = rest[after..].find('"') else {
+            break;
+        };
+        let value = &rest[after..after + end];
+        out.push_str(&rest[..after]);
+        match inline_one(root, value, &mut budget) {
+            Some(data) => out.push_str(&data),
+            None => out.push_str(value),
+        }
+        rest = &rest[after + end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn inline_one(root: &Path, value: &str, budget: &mut usize) -> Option<String> {
+    // Anything with a scheme is already somewhere the reader can reach, and a
+    // `data:` URI is one of ours from a previous pass.
+    if value.is_empty() || value.contains("://") || value.starts_with("data:") {
+        return None;
+    }
+    // `./pic.png` is what the document wrote and what the page carries; a
+    // browser resolves it away before it ever reaches the server, so the guard
+    // the server uses has never had to accept it.  `../` is still refused —
+    // the same answer the server gives, for the same reason.
+    let mut relative = value.trim_start_matches('/');
+    while let Some(rest) = relative.strip_prefix("./") {
+        relative = rest;
+    }
+    let target = format!("/{relative}");
+    let path = serve::safe_join(root, &target)?;
+    let size = std::fs::metadata(&path).ok()?.len();
+    if size > INLINE_MAX_FILE || size as usize > *budget {
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    *budget = budget.saturating_sub(bytes.len());
+    Some(format!(
+        "data:{};base64,{}",
+        serve::content_type(&path),
+        base64(&bytes)
+    ))
+}
+
+/// Base64, written out rather than depended on: this is the only place in the
+/// daemon that needs it, and a crate for forty lines is a crate to keep
+/// updated.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let block = match chunk {
+            [a] => u32::from(*a) << 16,
+            [a, b] => (u32::from(*a) << 16) | (u32::from(*b) << 8),
+            [a, b, c] => (u32::from(*a) << 16) | (u32::from(*b) << 8) | u32::from(*c),
+            _ => unreachable!("chunks(3) yields one, two or three"),
+        };
+        for index in 0..4 {
+            if index <= chunk.len() {
+                let shift = 18 - index * 6;
+                out.push(char::from(ALPHABET[((block >> shift) & 0x3f) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 async fn stdout_writer(mut rx: mpsc::Receiver<String>) {
@@ -1233,6 +1365,53 @@ fn self_test() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every length modulo three, against the alphabet and the padding rules —
+    /// this is written out here rather than depended on, so it is held here too.
+    #[test]
+    fn base64_matches_the_alphabet_and_the_padding() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        // Every byte value, so the last two alphabet entries are covered.
+        let all: Vec<u8> = (0u8..=255).collect();
+        let encoded = base64(&all);
+        assert!(encoded.contains('+') && encoded.contains('/'), "{encoded}");
+        assert_eq!(encoded.len(), 344);
+    }
+
+    /// The one-shot page carries its pictures or they are broken: a relative
+    /// `src` in a file written to a temporary directory points at nothing.
+    #[test]
+    fn the_one_shot_page_carries_the_pictures_beside_the_document() {
+        let root =
+            std::env::temp_dir().join(format!("simplemarkdown-inline-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("a directory");
+        std::fs::write(root.join("pic.png"), b"\x89PNG\r\n\x1a\n").expect("a picture");
+
+        let body = concat!(
+            "<img src=\"./pic.png\" alt=\"a\">",
+            "<img src=\"../secret.png\" alt=\"b\">",
+            "<img src=\"https://example.com/x.png\" alt=\"c\">",
+            "<img src=\"missing.png\" alt=\"d\">",
+        );
+        let out = inline_images(&root, body.to_string());
+        assert!(
+            out.contains("src=\"data:image/png;base64,iVBORw0KGgo"),
+            "{out}"
+        );
+        // Out of the document's directory, off the machine, or not there: all
+        // three are left exactly as the document wrote them.
+        assert!(out.contains("src=\"../secret.png\""), "{out}");
+        assert!(out.contains("src=\"https://example.com/x.png\""), "{out}");
+        assert!(out.contains("src=\"missing.png\""), "{out}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn self_test_passes() {

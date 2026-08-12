@@ -59,15 +59,7 @@ pub fn edit(op: Op, lines: &[String], from: usize, to: usize) -> Result<Vec<Repl
 }
 
 fn parser_options() -> MdOptions {
-    let mut md = MdOptions::empty();
-    md.insert(MdOptions::ENABLE_TABLES);
-    md.insert(MdOptions::ENABLE_FOOTNOTES);
-    md.insert(MdOptions::ENABLE_STRIKETHROUGH);
-    md.insert(MdOptions::ENABLE_TASKLISTS);
-    md.insert(MdOptions::ENABLE_HEADING_ATTRIBUTES);
-    md.insert(MdOptions::ENABLE_YAML_STYLE_METADATA_BLOCKS);
-    md.insert(MdOptions::ENABLE_GFM);
-    md
+    crate::md::options(false)
 }
 
 /// Byte offset → 1-based line, the same lookup `format.rs` and `outline.rs` use.

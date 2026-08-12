@@ -115,6 +115,30 @@ def PageOptions(): dict<any>
   }
 enddef
 
+# The second directory the preview may serve files from, or '' for none.
+#
+# Interlocked with the bind address rather than merely documented: widening the
+# tree is a reasonable thing to want on your own machine and a poor thing to do
+# by accident on `0.0.0.0`, and the setting that widens it is not the one that
+# decides who can reach it.
+def AssetRoot(host: string): string
+  var configured: string = simplemarkdown#Setting('simplemarkdown_browser_root')
+  if configured ==# ''
+    return ''
+  endif
+  if host !=# '127.0.0.1' && host !=# 'localhost'
+    Warn(printf('g:simplemarkdown_browser_root is ignored on %s: '
+      .. 'it would serve that directory to everyone who can reach the port.', host))
+    return ''
+  endif
+  var expanded = fnamemodify(expand(configured), ':p')
+  if !isdirectory(expanded)
+    Warn('g:simplemarkdown_browser_root is not a directory: ' .. configured)
+    return ''
+  endif
+  return expanded
+enddef
+
 # ─────────────────────────── sessions ───────────────────────────
 
 def SessionKey(bufnr: number): string
@@ -232,6 +256,7 @@ export def Open()
   var host: string = simplemarkdown#Setting('simplemarkdown_browser_host')
   var base: number = simplemarkdown#Setting('simplemarkdown_browser_port')
   var session = SessionKey(bufnr)
+  var root = AssetRoot(host)
 
   opening[key] = true
   var sent = simplemarkdown#core#Request({
@@ -239,6 +264,7 @@ export def Open()
     session: session,
     path: path,
     lines: getbufline(bufnr, 1, '$'),
+    root: root,
     host: host,
     port: base,
     attempts: PORT_ATTEMPTS,
@@ -253,6 +279,7 @@ enddef
 
 
 def OnServed(bufnr: number, path: string, session: string, reply: dict<any>)
+  var wanted = get(opening, string(bufnr), true)
   opening->remove(string(bufnr))
 
   if get(reply, '_failed', false) || get(reply, 'type', '') !=# 'serve_result'
@@ -271,9 +298,10 @@ def OnServed(bufnr: number, path: string, session: string, reply: dict<any>)
     Warn('browser preview failed: ' .. detail)
     return
   endif
-  if !bufexists(bufnr)
-    # The buffer went away while the port was being bound; nothing is going to
-    # feed this server, so it must not be left holding the port.
+  if !wanted || !bufexists(bufnr)
+    # Withdrawn while the port was being bound — by :SimpleMarkdownExternalClose
+    # or by the buffer going away.  Either way nothing is going to feed this
+    # server, so it must not be left holding the port.
     simplemarkdown#core#Send({type: 'serve_stop', session: session})
     return
   endif
@@ -284,6 +312,10 @@ def OnServed(bufnr: number, path: string, session: string, reply: dict<any>)
     path: path,
     session: session,
     url: url,
+    # What the page was built with.  Kept so that a later change to one of
+    # these can be noticed rather than silently ignored — the preview would go
+    # on updating its text and obeying nothing else.
+    page: PageOptions(),
     port: get(reply, 'port', 0),
     timer: 0,
     last_line: 0,
@@ -309,6 +341,15 @@ export def Close(all: bool = false)
   endif
   var key = string(TargetBuffer())
   if !has_key(previews, key)
+    if has_key(opening, key)
+      # Asked for and not yet answered.  Saying "there is none" would be false,
+      # and leaving the request alone would open a browser tab a moment after
+      # the user said stop — the first render of a long document is as long as
+      # this window gets.
+      opening[key] = false
+      echo '[SimpleMarkdown] the browser preview was still starting; it will not open.'
+      return
+    endif
     Warn('no browser preview for this buffer.')
     return
   endif
@@ -318,7 +359,10 @@ enddef
 
 export def Toggle()
   Prune()
-  if has_key(previews, string(TargetBuffer()))
+  var key = string(TargetBuffer())
+  # `opening` counts as open: toggling while one is starting means stop, not
+  # start a second.
+  if has_key(previews, key) || has_key(opening, key)
     Close()
   else
     Open()
@@ -470,6 +514,30 @@ def FollowLine(preview: dict<any>): number
     return 0
   endif
   return preview.bufnr == bufnr('%') ? line('.') : 0
+enddef
+
+# The user changed a `g:simplemarkdown_browser_*` option.  Some of it a page
+# already open can take; `math` decides which engine the *shell* loads and
+# `sync_back` decides whether the server answers `POST /cursor` at all, and
+# neither is something an open page can be talked into — so those are said out
+# loud instead of being dropped.
+export def OnOptionsChanged()
+  Prune()
+  for [key, preview] in items(previews)
+    var now = PageOptions()
+    if now == preview.page
+      continue
+    endif
+    var reopen = now.math !=# preview.page.math || now.sync_back != preview.page.sync_back
+    preview.page = now
+    simplemarkdown#core#Send({type: 'serve_opts', session: preview.session, page: now})
+    if reopen
+      echohl WarningMsg
+      echom printf('[SimpleMarkdown] %s: maths and scroll-back need the preview reopened '
+        .. '(:SimpleMarkdownExternal twice).', Describe(preview.bufnr))
+      echohl None
+    endif
+  endfor
 enddef
 
 # ─────────────────────────── the two cursors ───────────────────────────
