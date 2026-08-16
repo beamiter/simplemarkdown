@@ -49,29 +49,51 @@ function! s:Wait(expr, ms) abort
   return eval(a:expr)
 endfunction
 
+" Run a python program and return what it wrote to stdout.
+"
+" Through a file rather than `python3 -c`, and through one string rather than
+" an argv list, because of two separate traps.  Vim's system() takes a String
+" command; a List first argument is Neovim's spelling and Vim does not accept
+" it — it runs nothing, sets v:shell_error to 2 and hands back an empty string,
+" which every assertion below then reads as "the server did not answer".  That
+" is what this file did when it was written, so none of its HTTP assertions had
+" ever run.  And once the command has to be one string for the shell, a
+" multi-line python program inside it is a quoting problem with no good answer;
+" a file has none.
+function! s:Python(code) abort
+  let l:script = tempname() .. '.py'
+  call writefile(split(a:code, "\n", 1), l:script)
+  let l:out = system('python3 ' .. shellescape(l:script))
+  call delete(l:script)
+  return l:out
+endfunction
+
 " One HTTP GET.  Spoken by python3 rather than by Vim's raw channel: a client
 " that has to decide for itself when the response has ended is a second thing
 " the test can hang on, and the thing under test is the server.
+"
+" The proxy handlers are stripped: urlopen() honours $http_proxy, and a machine
+" that has one set would send a request for 127.0.0.1 to it and report the
+" server unreachable.
 function! s:Get(port, path) abort
-  let l:code = 'import sys,urllib.request,urllib.error' ..
+  return s:Python('import sys,urllib.request,urllib.error' ..
         \ "\nurl='http://127.0.0.1:" .. a:port .. a:path .. "'" ..
+        \ "\nopener=urllib.request.build_opener(urllib.request.ProxyHandler({}))" ..
         \ "\ntry:" ..
-        \ "\n r=urllib.request.urlopen(url,timeout=5)" ..
+        \ "\n r=opener.open(url,timeout=5)" ..
         \ "\n sys.stdout.write(str(r.status)+chr(10)+r.read().decode('utf-8','replace'))" ..
         \ "\nexcept urllib.error.HTTPError as e:" ..
         \ "\n sys.stdout.write(str(e.code)+chr(10))" ..
         \ "\nexcept Exception:" ..
-        \ "\n sys.stdout.write('0'+chr(10))"
-  return system(['python3', '-c', l:code])
+        \ "\n sys.stdout.write('0'+chr(10))")
 endfunction
 
 " Nothing is listening on this port any more.
 function! s:Refused(port) abort
-  let l:code = 'import socket,sys' ..
+  return s:Python('import socket,sys' ..
         \ "\ns=socket.socket()" ..
         \ "\ns.settimeout(1)" ..
-        \ "\nsys.stdout.write('1' if s.connect_ex(('127.0.0.1'," .. a:port .. ")) else '0')"
-  return system(['python3', '-c', l:code]) ==# '1'
+        \ "\nsys.stdout.write('1' if s.connect_ex(('127.0.0.1'," .. a:port .. ")) else '0')") ==# '1'
 endfunction
 
 function! s:Status() abort
