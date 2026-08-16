@@ -221,6 +221,17 @@ pub struct HtmlRequest {
 /// those two would put `unicode` and `max_width` on a page that has no columns.
 #[derive(Debug, Deserialize, Clone)]
 pub struct PageOptions {
+    /// What to call the document, for the tab and for the page's own config.
+    ///
+    /// Empty means "work it out from the path", which is what every client did
+    /// before this field existed and what the daemon still does for a document
+    /// whose path says everything about it.  The editor fills it in when the
+    /// path does not: a document open in a remote workspace is served out of a
+    /// staging directory, whose file name says nothing about which host the
+    /// document is on.  Optional rather than required, so an editor newer than
+    /// this daemon — or older — is not a preview that fails to open.
+    #[serde(default)]
+    pub name: String,
     /// Syntax-highlight fenced code blocks.
     #[serde(default = "yes")]
     pub syntax: bool,
@@ -253,6 +264,7 @@ pub struct PageOptions {
 impl Default for PageOptions {
     fn default() -> Self {
         Self {
+            name: String::new(),
             syntax: true,
             frontmatter: true,
             theme: auto(),

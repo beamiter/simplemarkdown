@@ -1016,10 +1016,10 @@ Pictures in the browser preview ~
 The browser preview (|simplemarkdown-external|) serves the directory the
 document is in, and for a remote document that directory is on another host.
 So every picture the document refers to — `![](img/one.png)`, a reference
-image, a raw `<img src=...>` tag — is downloaded into a staging directory of
-its own under Vim's temporary directory with `g:SimpleRemoteDownload()`, and
-the daemon is pointed at that directory instead.  Pictures inside a fenced
-code block are text and are not fetched.
+image, a raw `<img src=...>` tag with its value quoted or not — is downloaded
+into a staging directory of its own under Vim's temporary directory with
+`g:SimpleRemoteDownload()`, and the daemon is pointed at that directory
+instead.  Pictures inside a fenced code block are text and are not fetched.
 
 The staging directory is laid out as the URLs the browser will ask for, not as
 the remote tree.  A browser resolves `../assets/logo.png` against the page's
@@ -1036,7 +1036,10 @@ document referred to when the preview opened plus whatever it names later — an
 edit that adds a picture fetches it before the update that would show it is
 pushed, since a browser that asks for a file too early keeps the broken image
 it got.  A picture already staged is not fetched again while the preview is
-open; reopen the preview to pick up one that changed on the host.
+open; reopen the preview to pick up one that changed on the host.  A preview
+closed while its pictures were still coming and reopened at once waits for its
+own transfers: the withdrawn round lands in nobody's account, so the page is
+not opened on a document whose pictures have not arrived.
 
 |:SimpleMarkdownExternalStatic| stages the same way and the daemon then
 inlines the staged pictures into the page as `data:` URIs, so the one-shot
@@ -1051,9 +1054,20 @@ many of its pictures are on this machine.
                                                 *simplemarkdown-remote-titles*
 Which host a document is on ~
 
-The preview window and the browser tab of a document in a workspace are titled
-with what `g:SimpleRemoteStatusline()` names — `[SimpleMarkdown] README.md
+The preview window of a document in a workspace is titled with what
+`g:SimpleRemoteStatusline()` names — `[SimpleMarkdown] README.md
 @ssh:box:docs@9ms` — so a remote README.md is not titled like the local one.
+|:SimpleMarkdownHealth| names it the same way.
+
+The browser preview is sent that name too, in the `serve` and `html` requests:
+it is what the page reports itself as, and what the tab is called when the
+document has no heading of its own to take a title from — the same rule a
+local document's file name follows.  The daemon cannot work it out on its own,
+because the path it is handed for a remote document is a copy in a staging
+directory called after the file and nothing else.  A daemon older than this
+plugin ignores the name and falls back to that file name; run `./install.sh`
+and |:SimpleMarkdownRestart| to rebuild it.
+
 Projected buffers get the suffix too, through `b:simpleremote_path`.
 
 ==============================================================================

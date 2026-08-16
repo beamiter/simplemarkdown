@@ -793,9 +793,19 @@ fn html_options(page: &PageOptions) -> html::Options {
 }
 
 /// The page around it.
+///
+/// `name` is what the path says the document is called; `page.name` is what
+/// the editor says it is called, and it wins when it has anything to say.  A
+/// document open in a remote workspace is served out of a staging directory
+/// whose file name — `main.md` — is the same for every host, and the editor is
+/// the only side that knows which one it came from.
 fn page_options(name: String, page: &PageOptions) -> html::PageOptions {
     html::PageOptions {
-        name,
+        name: if page.name.is_empty() {
+            name
+        } else {
+            page.name.clone()
+        },
         theme: page.theme.clone(),
         math: page.math.clone(),
         math_url: page.math_url.clone(),
@@ -1411,6 +1421,48 @@ mod tests {
         assert!(out.contains("src=\"missing.png\""), "{out}");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The editor's name for the document wins over the one the path implies,
+    /// and an editor that sends none leaves the path's name alone.  This is the
+    /// whole of what makes a remote document's tab say which host it is on:
+    /// its path is a copy in a staging directory called `main.md`.
+    #[test]
+    fn the_editors_name_for_the_document_wins() {
+        let (_, from_path) = document_root("/tmp/simplemarkdown-remote-7/main.md");
+        assert_eq!(from_path, "main.md");
+
+        let unnamed = PageOptions::default();
+        assert_eq!(page_options(from_path.clone(), &unnamed).name, "main.md");
+
+        let named = PageOptions {
+            name: String::from("main.md @ssh:box:docs@9ms"),
+            ..PageOptions::default()
+        };
+        assert_eq!(
+            page_options(from_path, &named).name,
+            "main.md @ssh:box:docs@9ms"
+        );
+    }
+
+    /// And it reaches that far through the wire, from a request written by an
+    /// editor that predates the field as well as one that does not.
+    #[test]
+    fn a_page_name_is_optional_on_the_wire() {
+        let old = r#"{"type":"html","id":1,"path":"a.md","lines":[],"page":{"theme":"dark"}}"#;
+        match serde_json::from_str::<Request>(old).expect("parses") {
+            Request::Html(request) => {
+                assert_eq!(request.page.theme, "dark");
+                assert_eq!(request.page.name, "");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let new =
+            r#"{"type":"html","id":1,"path":"a.md","lines":[],"page":{"name":"a.md @ssh:box"}}"#;
+        match serde_json::from_str::<Request>(new).expect("parses") {
+            Request::Html(request) => assert_eq!(request.page.name, "a.md @ssh:box"),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

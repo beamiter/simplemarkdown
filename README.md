@@ -231,9 +231,11 @@ resolved against the **remote** path and opened as another `remote://` buffer,
 with the `#anchor` jump owed until the text arrives. And the browser preview
 serves the directory the document is in — which is on another host — so every
 picture the document refers to is downloaded into a staging directory laid out
-as the URLs the browser will ask for, and the daemon is pointed at that.
-`:help simplemarkdown-remote` has the caps, the clamping rule and what happens
-without a connection.
+as the URLs the browser will ask for, and the daemon is pointed at that. The
+page is told what to call the document as well, since the path it was handed
+is a copy in that staging directory and says nothing about which host it came
+from. `:help simplemarkdown-remote` has the caps, the clamping rule and what
+happens without a connection.
 
 ## What it renders
 

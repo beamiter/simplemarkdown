@@ -120,6 +120,10 @@ call s:Ok(s:page =~# 'Kettle', 'the page carries the heading')
 call s:Ok(s:page =~# 'data-line=', 'blocks carry their source line, for scroll sync')
 call s:Ok(s:page =~# '<style>', 'the page carries its own stylesheet')
 call s:Ok(s:page !~# 'cdn\.jsdelivr', 'with maths off the page reaches nowhere')
+" What the tab is called when the document has no heading of its own, and what
+" the page reports itself as.  The editor sends it; for a local document it is
+" the file name, which is what the daemon would have worked out for itself.
+call s:Ok(s:page =~# '"name":"note\.md"', 'the page is told what the document is called')
 
 " ── following the buffer, not the file ──────────────────────────────────────
 
@@ -188,6 +192,9 @@ call setline(1, [
       \ '![collapsed][]',
       \ '<p><img alt="raw" src="img/raw.png" width="20"></p>',
       \ "<IMG SRC='img/upper.png'>",
+      \ '<img src=img/bare.png>',
+      \ '<img alt=x src = img/spaced.png width=3>',
+      \ '<img data-src="img/lazy.png" src="img/real.png">',
       \ '![again](img/one.png)',
       \ '[not an image](img/link.png)',
       \ '```',
@@ -202,7 +209,8 @@ call setline(1, [
       \ ])
 call s:Ok(simplemarkdown#ImageHrefs(bufnr('%')) == [
       \ 'img/one.png', 'img/two.png', 'img/three four.png', 'img/logo.png',
-      \ 'img/collapsed.png', 'img/raw.png', 'img/upper.png'],
+      \ 'img/collapsed.png', 'img/raw.png', 'img/upper.png', 'img/bare.png',
+      \ 'img/spaced.png', 'img/real.png'],
       \ 'every image the document draws, once: ' .. string(simplemarkdown#ImageHrefs(bufnr('%'))))
 bwipeout!
 
@@ -297,7 +305,13 @@ call s:Ok(s:entry.staged == 3 && s:entry.assets == 4,
       \ 'three of the four are on this machine: ' .. string(s:entry))
 
 " And the server hands them out.
-call s:Ok(s:Get(s:port, '/') =~# 'Remote pictures', 'the page is served')
+let s:remote_page = s:Get(s:port, '/')
+call s:Ok(s:remote_page =~# 'Remote pictures', 'the page is served')
+" The name the page carries is the editor's, not the staging directory's: the
+" copy the daemon was pointed at is called `main.md` whichever host it came
+" from, and the tab of a remote README.md must not read like the local one's.
+call s:Ok(s:remote_page =~# '"name":"main\.md @ssh:box:srv@9ms"',
+      \ 'the page says which workspace the document is in')
 call s:Ok(s:Get(s:port, '/img/one.png') =~# '^200\nPNG-ONE', 'a relative picture is served from the staging directory')
 call s:Ok(s:Get(s:port, '/shared/logo.png') =~# '^200\nPNG-LOGO', 'so is the one above the document')
 call s:Ok(s:Get(s:port, '/x%20y.png') =~# '^200\nPNG-SPACE', 'and the one with a space in its name')
@@ -325,6 +339,8 @@ call s:Ok(s:static =~# 'alt="one"[^>]*' || s:static =~# 'data:image/png;base64,U
 call s:Ok(s:static =~# 'data:image/png;base64,UE5HLU9ORQo=', 'img/one.png is inlined')
 call s:Ok(s:static =~# 'data:image/png;base64,UE5HLVNQQUNFCg==', 'x y.png is inlined')
 call s:Ok(s:static =~# 'src="missing.png"', 'a picture that could not be staged stays a link')
+call s:Ok(s:static =~# '"name":"main\.md @ssh:box:srv@9ms"',
+      \ 'and the one-shot page says which workspace it came from too')
 
 SimpleMarkdownExternalClose
 call s:Ok(s:Wait('empty(s:Status())', 4000), 'closing stops the remote preview')
@@ -340,6 +356,33 @@ SimpleMarkdownExternalClose
 sleep 700m
 call s:Ok(empty(s:Status()), 'a preview closed while staging never opens')
 call s:Ok(!isdirectory(s:stage), 'and its staging directory is gone')
+
+" ...and reopened straight away, which is what an impatient close is followed
+" by.  The withdrawn round's transfers are still in flight — a close does not
+" cancel them — and they land while the new round's are still coming.  They
+" must not be read as answers to the new round: crediting them would settle it
+" with none of its own pictures here and open the tab on a page full of broken
+" ones, which is the exact thing staging exists to prevent.
+let g:simplemarkdown_test_download_delay = 300
+let g:simplemarkdown_test_downloads = []
+SimpleMarkdownExternalOpen
+call s:Ok(len(g:simplemarkdown_test_downloads) == 5, 'the first round starts its transfers')
+sleep 50m
+SimpleMarkdownExternalClose
+" Slower than the round it replaces, so the withdrawn callbacks land first.
+let g:simplemarkdown_test_download_delay = 1200
+let g:simplemarkdown_test_downloads = []
+SimpleMarkdownExternalOpen
+call s:Ok(len(g:simplemarkdown_test_downloads) == 5, 'and the second round starts its own')
+" Past the first round's landing time and well short of the second's.
+sleep 700m
+call s:Ok(empty(s:Status()),
+      \ 'a withdrawn round of transfers does not open the preview that replaced it')
+call s:Ok(s:Wait('len(s:Status()) == 1', 8000), 'which opens once its own pictures are here')
+call s:Ok(s:Status()[0].staged == 4 && s:Status()[0].assets == 5,
+      \ 'with every picture accounted for: ' .. string(s:Status()))
+SimpleMarkdownExternalClose
+call s:Ok(s:Wait('empty(s:Status())', 4000), 'closed')
 let g:simplemarkdown_test_download_delay = 30
 
 " Without a SimpleRemote that can download, the document is still served — from

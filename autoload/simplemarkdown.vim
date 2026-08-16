@@ -2650,9 +2650,19 @@ const IMAGE_PATTERNS: list<string> = [
   '\c<img\s[^>]*>',
 ]
 
+# The `src` of a raw `<img>`, quoted or not.  HTML5 allows `<img src=plot.png>`
+# and generators emit it; the daemon passes such a tag into the page verbatim,
+# so an href only the quoted branch recognised was one the browser asked for
+# and the staging never fetched — a broken picture that :SimpleMarkdownHealth
+# did not even count as missing.  The unquoted value ends at whitespace or at
+# the `>` that ends the tag, which is what an HTML parser does with it.  The
+# preceding whitespace is required so that `data-src=` is not read as `src=`.
+const IMG_SRC_PATTERN =
+  '\c\s\+src\s*=\s*\%(["'']\zs[^"'']*\|\zs[^"''[:space:]>]\+\)'
+
 # Every image the document draws — `![alt](href)`, `![alt][ref]` through its
-# `[ref]:` definition, and a raw `<img src="…">` — as the hrefs it wrote, in
-# document order, each once.  Fenced code is skipped, as it is for headings: a
+# `[ref]:` definition, and a raw `<img src=…>` with the value quoted or not —
+# as the hrefs it wrote, in document order, each once.  Fenced code is skipped, as it is for headings: a
 # `![](x.png)` in a Markdown tutorial's code sample draws nothing.  What the
 # browser preview stages for a remote document; nothing here decides whether an
 # href can be fetched.
@@ -2679,7 +2689,7 @@ export def ImageHrefs(bufnr: number): list<string>
           break
         endif
         var href = matched =~? '^<img'
-          ? matchstr(matched, '\csrc\s*=\s*["'']\zs[^"'']*')
+          ? matchstr(matched, IMG_SRC_PATTERN)
           : HrefOfMatch(matched, bufnr)
         if href !=# '' && !has_key(seen, href)
           seen[href] = true

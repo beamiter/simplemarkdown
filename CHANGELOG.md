@@ -49,9 +49,29 @@ All notable changes to this project are documented here.  The format follows
   `FileType` 也不再触发。收到事件就按一次编辑处理,两个预览都跟上。autocmd 无条件
   注册:没人发的事件不花钱。
 
-- 预览窗标题和浏览器标签页带上 `g:SimpleRemoteStatusline()`——
-  `[SimpleMarkdown] README.md @ssh:box:docs@9ms`——远端的 README.md 不再和本地的
-  那个同名。投影模式的 buffer 通过 `b:simpleremote_path` 同样带。
+- 预览窗标题带上 `g:SimpleRemoteStatusline()`——`[SimpleMarkdown] README.md
+  @ssh:box:docs@9ms`——远端的 README.md 不再和本地的那个同名;`:SimpleMarkdownHealth`
+  也这么报。浏览器预览同样收到这个名字:`serve` / `html` 请求里多了一个可选的
+  `page.name`,守护进程有它就用它,没有才按路径去猜——而远端文档的路径是暂存目录里
+  的一份副本,只叫 `main.md`,说不出它在哪台机器上。文档自己没有标题时,标签页用的
+  就是这个名字(和本地文档用文件名是同一条规则),页面的 `window.SM.name` 也是它。
+  字段是可选的:旧守护进程读不到就回落到文件名,预览照开(重新 `./install.sh` 即可)。
+  投影模式的 buffer 通过 `b:simpleremote_path` 同样带。
+
+- **暂存记录带上了 generation。** 关掉一个正在取图的预览再马上打开——不耐烦的人就是
+  这么点的——第一轮的传输并不会被取消:关闭只是把它从 `opening` 里撤掉,回调还在路
+  上。而暂存表只按 buffer 号索引,暂存目录也是按 buffer 号定的,于是第一轮的回调回
+  来时找到的是**第二轮**刚建的那条记录,把它的 `pending` 一路减到 0,第二轮的图一张
+  没到就把等待者叫醒了——浏览器标签页开出来,满页坏图,正是暂存要防的那件事;
+  `:SimpleMarkdownHealth` 报的"到位几张"也是错的。现在每条记录有一个只增不减的
+  generation,回调带着它回来,对不上就直接返回。
+
+- **不带引号的 `<img src=...>` 也算图片了。** `<img src=diagram.png>` 是合法的
+  HTML5,不少生成器就这么写,守护进程也原样放进页面里——但取 href 的正则只认引号,
+  于是这张图从没被暂存过,浏览器要 `/diagram.png` 要出一个 404,而
+  `:SimpleMarkdownHealth` 连"共几张"都没把它算进去,读起来是 N/N 一切正常。顺带:
+  `src` 前面现在要求有空白,`<img data-src="…" src="…">` 不会再把 `data-src` 当成
+  `src`。
 
 - 顺手修掉一个跟远程无关的老毛病:`serve` 还在路上时 `:SimpleMarkdownExternalClose!`
   会把 `opening` 整张表换掉,回调回来 `remove()` 一个已经不在的 key 会抛 E716——

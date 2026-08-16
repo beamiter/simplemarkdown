@@ -101,12 +101,19 @@ enddef
 
 # ─────────────────────────── the page ───────────────────────────
 
-# Everything about the page that is a user's choice rather than the document's.
-# Sent whole on `serve` and on `html`, and not again: an update carries the
-# document, and re-declaring the theme on every keystroke would be JSON the
-# daemon parses for nothing.
-def PageOptions(): dict<any>
+# Everything about the page that is a user's choice rather than the document's,
+# plus what to call the document.  Sent whole on `serve` and on `html`, and not
+# again: an update carries the document, and re-declaring the theme on every
+# keystroke would be JSON the daemon parses for nothing.
+#
+# `name` is here because the daemon cannot work it out.  It names the document
+# after the path it was handed, and a remote document's path is a copy in a
+# staging directory — plain `main.md`, saying nothing about which host it came
+# from.  This side knows, so this side says; a daemon too old to read the field
+# ignores it and falls back to the basename, which is what it did before.
+def PageOptions(bufnr: number): dict<any>
   return {
+    name: Describe(bufnr),
     syntax: simplemarkdown#Setting('simplemarkdown_syntax') ? true : false,
     frontmatter: simplemarkdown#Setting('simplemarkdown_frontmatter') ? true : false,
     theme: simplemarkdown#Setting('simplemarkdown_browser_theme'),
@@ -309,7 +316,7 @@ def Serve(bufnr: number, path: string)
     host: host,
     port: base,
     attempts: PORT_ATTEMPTS,
-    page: PageOptions(),
+    page: PageOptions(bufnr),
   }, (reply) => OnServed(bufnr, path, session, reply), OPEN_TIMEOUT_MS)
 
   if sent == 0
@@ -368,7 +375,7 @@ def OnServed(bufnr: number, path: string, session: string, reply: dict<any>)
     # What the page was built with.  Kept so that a later change to one of
     # these can be noticed rather than silently ignored — the preview would go
     # on updating its text and obeying nothing else.
-    page: PageOptions(),
+    page: PageOptions(bufnr),
     timer: 0,
     last_line: 0,
     cursor_sent_ms: 0,
@@ -463,7 +470,7 @@ def RequestStatic(bufnr: number, path: string)
   if !bufexists(bufnr)
     return
   endif
-  var page = PageOptions()
+  var page = PageOptions(bufnr)
   # Nothing is listening: a page written to a file must not spend its life
   # reconnecting to an event stream that was never there.
   page.live = false
@@ -546,12 +553,24 @@ const REMOTE_ASSET_MAX = 64
 const REMOTE_ASSET_MAX_BYTES = 64 * 1024 * 1024
 
 # source bufnr (as a string) -> staging
+#   generation  which attempt this record is (see below)
 #   dir      the staging directory
 #   assets   href -> {remote, local, state: 'pending' | 'ok' | 'failed' | 'skipped', bytes}
 #   pending  transfers in flight
 #   bytes    what the 'ok' ones add up to
 #   waiters  what to call once nothing is in flight
 var staging: dict<any> = {}
+
+# Bumped for every record made, and never reused.  The key is the buffer
+# number, so a preview closed while its pictures were coming and reopened at
+# once produces a *second* record under the *same* key — while the first
+# round's transfers are still in flight, since a close does not cancel them.
+# Their callbacks would otherwise be read as answers to the second round: the
+# new record's `pending` would fall to zero with none of its own transfers
+# landed, and the page would open with every picture still missing, which is
+# the one thing staging exists to prevent.  The generation is what tells the
+# two rounds apart.
+var staging_generation = 0
 
 
 # The staging directory of `bufnr`, made if it is not there.  Under Vim's own
@@ -638,9 +657,14 @@ enddef
 def Stage(bufnr: number, remote: dict<any>, hrefs: list<string>, Then: func)
   var key = string(bufnr)
   if !has_key(staging, key)
-    staging[key] = {dir: StageDir(bufnr), assets: {}, pending: 0, bytes: 0, waiters: []}
+    staging_generation += 1
+    staging[key] = {generation: staging_generation, dir: StageDir(bufnr),
+      assets: {}, pending: 0, bytes: 0, waiters: []}
   endif
   var stage = staging[key]
+  # Read once and closed over below, so that every transfer this call starts
+  # answers to the record it was started for and to no later one.
+  var gen: number = stage.generation
   add(stage.waiters, Then)
   var can = exists('*g:SimpleRemoteDownload')
   # Held while the loop runs: SimpleRemote answers a transfer it refuses —
@@ -678,7 +702,7 @@ def Stage(bufnr: number, remote: dict<any>, hrefs: list<string>, Then: func)
     # `force`: a preview reopened after the plot was regenerated must show the
     # new plot, and the stale copy from last time is exactly what is there.
     var started = g:SimpleRemoteDownload(asset.remote, local, {force: true},
-      (ok, result) => OnStaged(key, href, !!ok, result))
+      (ok, result) => OnStaged(key, gen, href, !!ok, result))
     if !started && asset.state ==# 'pending'
       # Refused without the callback having been called — SimpleRemote calls it
       # even then, but a refusal is a refusal from anybody — so no answer is
@@ -692,13 +716,16 @@ def Stage(bufnr: number, remote: dict<any>, hrefs: list<string>, Then: func)
 enddef
 
 
-def OnStaged(key: string, href: string, ok: bool, result: any)
-  if !has_key(staging, key)
-    # Closed while the transfer was in flight; the file may have landed in a
-    # directory nobody is serving any more, which is fine.
+def OnStaged(key: string, gen: number, href: string, ok: bool, result: any)
+  var stage: dict<any> = get(staging, key, {})
+  if get(stage, 'generation', -1) != gen
+    # Closed while the transfer was in flight — and possibly reopened since,
+    # which is what makes the generation rather than the key the test.  The
+    # file may have landed in a directory nobody is serving any more, which is
+    # fine; what is not fine is counting it towards the attempt that replaced
+    # this one, whose own transfers are still on their way.
     return
   endif
-  var stage = staging[key]
   stage.pending = max([0, stage.pending - 1])
   var asset = get(stage.assets, href, {})
   if !empty(asset)
@@ -868,7 +895,7 @@ enddef
 export def OnOptionsChanged()
   Prune()
   for [key, preview] in items(previews)
-    var now = PageOptions()
+    var now = PageOptions(preview.bufnr)
     if now == preview.page
       continue
     endif
