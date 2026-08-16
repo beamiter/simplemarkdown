@@ -133,6 +133,11 @@ var last_elapsed_ms = -1
 var patched_renders = 0
 var full_renders = 0
 var last_patch_rows = -1
+# remote:// bufnr (as a string) -> the `#anchor` to jump to once SimpleRemote
+# has filled the buffer.  A link into a remote document is followed by an
+# `:edit remote://…` whose text arrives asynchronously, so the jump waits for
+# the User SimpleRemoteBufferRead that says it has (see FollowHref).
+var pending_anchors: dict<string> = {}
 
 # ─────────────────────────── configuration ───────────────────────────
 #
@@ -765,8 +770,13 @@ def IsMarkdownBuffer(bufnr: number): bool
   if bufnr <= 0 || IsPreviewBuffer(bufnr)
     return false
   endif
+  # 'acwrite' is a file that is read and written by an autocommand rather than
+  # by Vim — SimpleRemote's remote:// buffers, netrw's scp:// ones — and it
+  # holds real Markdown.  Every other 'buftype' (the plugin's own nofile
+  # preview, quickfix, help, a terminal) is something this plugin must not
+  # preview, lint or fold.
   var buftype = getbufvar(bufnr, '&buftype')
-  if type(buftype) != v:t_string || buftype !=# ''
+  if type(buftype) != v:t_string || (buftype !=# '' && buftype !=# 'acwrite')
     return false
   endif
   var filetype = getbufvar(bufnr, '&filetype')
@@ -925,8 +935,8 @@ def OpenForCurrentTab(): string
   setlocal foldcolumn=0 signcolumn=no colorcolumn=
   setlocal cursorline winfixwidth nomodeline
   setlocal filetype=simplemarkdown
-  var title = printf('[SimpleMarkdown] %s',
-    fnamemodify(bufname(src_bufnr), ':t') ?? '[No Name]')
+  var title = printf('[SimpleMarkdown] %s%s',
+    fnamemodify(bufname(src_bufnr), ':t') ?? '[No Name]', RemoteSuffix(src_bufnr))
   if bufexists(title)
     # A second tab page previewing the same file: :file would fail with E95
     # and leave the buffer unnamed.
@@ -2022,6 +2032,9 @@ enddef
 
 
 export def OnBufferWipeout(bufnr: number)
+  if has_key(pending_anchors, string(bufnr))
+    pending_anchors->remove(string(bufnr))
+  endif
   for [key, session] in items(sessions)
     if session.bufnr == bufnr
       DropSession(key)
@@ -2486,6 +2499,34 @@ def FollowHref(href: string, src_bufnr: number, session: dict<any> = {})
     return
   endif
 
+  # A document in a SimpleRemote virtual workspace is a `remote:///abs/path`
+  # buffer: its neighbours are on the remote host, so the link is resolved
+  # against the remote path and opened as another remote:// buffer, which
+  # SimpleRemote's BufReadCmd fills.  There is nothing to test for readability
+  # here — SimpleRemote reports a missing file itself — and the anchor jump has
+  # to wait for the text, which arrives asynchronously.
+  var remote = RemoteInfo(src_bufnr)
+  if !empty(remote)
+    var uri = 'remote://' .. RemoteHrefPath(remote.path, target)
+    if !empty(session) && WindowExists(session.src_winid)
+      win_gotoid(session.src_winid)
+    endif
+    # A link to the document itself — `README.md#usage` — is a jump, not a
+    # reload of a buffer that may have unwritten changes.
+    if bufname('%') !=# uri
+      execute 'edit ' .. fnameescape(uri)
+    endif
+    if anchor !=# ''
+      var buf = bufnr('%')
+      if RemoteFillPending(buf)
+        pending_anchors[string(buf)] = anchor
+      else
+        JumpToAnchorHere(anchor)
+      endif
+    endif
+    return
+  endif
+
   # A relative link is a file in the source document's directory; opening it in
   # the source window keeps the preview where it is.
   var base = fnamemodify(bufname(src_bufnr), ':p:h')
@@ -2504,6 +2545,151 @@ def FollowHref(href: string, src_bufnr: number, session: dict<any> = {})
   if anchor !=# ''
     JumpToAnchorHere(anchor)
   endif
+enddef
+
+
+# ─────────────────────────── remote workspaces ───────────────────────────
+#
+# SimpleRemote (a sibling plugin, never required) opens files of an SSH host or
+# a Docker container in one of two shapes.  A *projected* workspace mounts or
+# maps the remote tree onto local paths, and such buffers are ordinary files to
+# this plugin.  A *virtual* workspace opens `remote:///abs/path` buffers with
+# 'buftype' acwrite and `b:vimrc_remote = {path, uri, generation}`, filled by a
+# BufReadCmd and announced by `User SimpleRemoteBufferRead`; those need the
+# handful of accommodations below.  Everything is feature-detected: without
+# SimpleRemote none of it is reached.
+
+# `b:vimrc_remote` of a SimpleRemote virtual buffer, or {} for any other buffer.
+export def RemoteInfo(bufnr: number): dict<any>
+  if bufnr <= 0
+    return {}
+  endif
+  var info = getbufvar(bufnr, 'vimrc_remote', {})
+  if type(info) != v:t_dict || type(get(info, 'path', 0)) != v:t_string
+      || info.path !~# '^/'
+    return {}
+  endif
+  return info
+enddef
+
+
+# ' @kind:target:root' for a document that lives in a SimpleRemote workspace —
+# virtual or projected — so that a preview of `README.md` on a remote host is
+# not titled like the local one; '' for a local file.
+export def RemoteSuffix(bufnr: number): string
+  if !exists('*g:SimpleRemoteStatusline')
+    return ''
+  endif
+  var projected = getbufvar(bufnr, 'simpleremote_path', '')
+  if empty(RemoteInfo(bufnr)) && (type(projected) != v:t_string || projected ==# '')
+    return ''
+  endif
+  var status = g:SimpleRemoteStatusline()
+  return type(status) == v:t_string && status !=# '' ? ' @' .. status : ''
+enddef
+
+
+# Where `target`, as written in the remote document at `remote_path`, lives on
+# the remote host.  Absolute hrefs name the remote filesystem; relative ones
+# the document's directory.  simplify() runs on the bare path — on
+# `remote:///a/../b` it would collapse the `///` and hand back a second buffer
+# name for the same file.
+def RemoteHrefPath(remote_path: string, target: string): string
+  if target =~# '^/'
+    return simplify(target)
+  endif
+  var dir = fnamemodify(remote_path, ':h')
+  return simplify(dir ==# '/' ? '/' .. target : dir .. '/' .. target)
+enddef
+
+
+# Whether SimpleRemote has still to fill `buf`: a remote:// buffer that has been
+# opened and not yet read has no `b:vimrc_remote` (it is set after the fill),
+# and one being re-read carries the read it is waiting for in
+# `b:vimrc_remote_read`.
+def RemoteFillPending(buf: number): bool
+  if empty(RemoteInfo(buf))
+    return true
+  endif
+  var reading = getbufvar(buf, 'vimrc_remote_read', {})
+  return type(reading) == v:t_dict && !empty(reading)
+enddef
+
+
+# `User SimpleRemoteBufferRead`: SimpleRemote has (re)filled remote:// buffer
+# `bufnr` from a channel callback, which is not a TextChanged, so the previews
+# are told the way an edit tells them; and a link followed into this buffer
+# while it was still empty gets its `#anchor` jump now that the headings are
+# there.
+export def OnRemoteBufferRead(bufnr: number)
+  if bufnr <= 0 || !bufexists(bufnr)
+    return
+  endif
+  OnTextChanged(bufnr)
+  if !has_key(pending_anchors, string(bufnr))
+    return
+  endif
+  var anchor = pending_anchors->remove(string(bufnr))
+  var winid = bufnr('%') == bufnr ? win_getid() : bufwinid(bufnr)
+  if winid > 0
+    win_execute(winid, 'call simplemarkdown#JumpToAnchor(' .. string(anchor) .. ')')
+  endif
+enddef
+
+
+# The deferred half of FollowHref for a remote document, run inside the window
+# holding it.  Public only so that win_execute() can name it.
+export def JumpToAnchor(anchor: string)
+  JumpToAnchorHere(anchor)
+enddef
+
+
+const IMAGE_PATTERNS: list<string> = [
+  '!\[[^]]*\]([^()]*)',
+  '!\[[^]]*\]\[[^]]*\]',
+  '\c<img\s[^>]*>',
+]
+
+# Every image the document draws — `![alt](href)`, `![alt][ref]` through its
+# `[ref]:` definition, and a raw `<img src="…">` — as the hrefs it wrote, in
+# document order, each once.  Fenced code is skipped, as it is for headings: a
+# `![](x.png)` in a Markdown tutorial's code sample draws nothing.  What the
+# browser preview stages for a remote document; nothing here decides whether an
+# href can be fetched.
+export def ImageHrefs(bufnr: number): list<string>
+  var out: list<string> = []
+  var seen: dict<bool> = {}
+  var fence = ''
+  for line in getbufline(bufnr, 1, '$')
+    var marker = trim(matchstr(line, '^\s\{0,3}\%(`\{3,}\|\~\{3,}\)'))
+    if fence !=# ''
+      if marker !=# '' && marker[0] ==# fence[0]
+        fence = ''
+      endif
+      continue
+    elseif marker !=# ''
+      fence = marker
+      continue
+    endif
+    for pattern in IMAGE_PATTERNS
+      var start = 0
+      while start <= len(line)
+        var [matched, from, to] = matchstrpos(line, pattern, start)
+        if from < 0
+          break
+        endif
+        var href = matched =~? '^<img'
+          ? matchstr(matched, '\csrc\s*=\s*["'']\zs[^"'']*')
+          : HrefOfMatch(matched, bufnr)
+        if href !=# '' && !has_key(seen, href)
+          seen[href] = true
+          add(out, href)
+        endif
+        start = to > from ? to : from + 1
+      endwhile
+    endfor
+  endfor
+  return out
 enddef
 
 

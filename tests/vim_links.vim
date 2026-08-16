@@ -208,6 +208,117 @@ call assert_true(execute('messages') =~# 'no link under the cursor',
       \ 'a line with no link says so')
 call assert_equal(11, line('.'), 'and the cursor does not move')
 
+" ------------------------------------------------------ a remote document ---
+
+" A document open through SimpleRemote's virtual workspace is a
+" `remote:///abs/path` buffer with 'buftype' acwrite and b:vimrc_remote; the
+" files it links to are on the remote host, so a link is resolved against the
+" remote path and opened as another remote:// buffer for SimpleRemote's
+" BufReadCmd to fill.  SimpleRemote is not on the runtimepath here: what is
+" tested is the name the plugin asks :edit for, and that the anchor jump waits
+" for the fill it announces.
+new
+file remote:///srv/docs/main.md
+setlocal buftype=acwrite
+call setline(1, [
+      \ '# Remote main',
+      \ '',
+      \ 'Open [the other file](./sub/../other.md#target-heading) too.',
+      \ '',
+      \ 'Or [the top one](/srv/top.md).',
+      \ '',
+      \ 'And [this one](#remote-main).',
+      \ '',
+      \ 'Or [itself](./main.md#remote-main).',
+      \ ])
+let b:vimrc_remote = {'path': '/srv/docs/main.md',
+      \ 'uri': 'remote:///srv/docs/main.md', 'generation': 1}
+" As SimpleRemote leaves a buffer it has just filled.  Kept loaded when
+" hidden: without SimpleRemote's BufReadCmd there is nothing to reload it from.
+setlocal nomodified bufhidden=hide
+setlocal filetype=markdown
+let s:remote_win = win_getid()
+let s:remote_buf = bufnr('%')
+
+" From the source buffer.  Column 1 is on no link: the leftmost one is meant.
+call cursor(3, 1)
+let s:mark = len(split(execute('messages'), "\n"))
+SimpleMarkdownFollow
+call assert_equal('remote:///srv/docs/other.md', bufname('%'),
+      \ 'a relative link is resolved against the remote path, `..` collapsed, '
+      \ .. 'and opened as a remote:// buffer: ' .. bufname('%'))
+call assert_equal(s:remote_win, win_getid(), 'in the same window')
+call assert_true(join(split(execute('messages'), "\n")[s:mark :], "\n") !~# 'cannot open',
+      \ 'and is not tested for local readability, which it has none of')
+let s:other_remote = bufnr('%')
+
+" Nothing has filled the buffer yet — SimpleRemote does that asynchronously —
+" so the `#target-heading` jump is owed, not made.
+call assert_equal([''], getline(1, '$'), 'the buffer is empty until SimpleRemote fills it')
+call setline(1, ['# Other', '', '```sh', '# target heading', '```', '', '## Target heading', '', 'Landed.'])
+let b:vimrc_remote = {'path': '/srv/docs/other.md',
+      \ 'uri': 'remote:///srv/docs/other.md', 'generation': 1}
+setlocal nomodified bufhidden=hide
+let g:simpleremote_event = {'event': 'SimpleRemoteBufferRead', 'type': 'buffer-read',
+      \ 'bufnr': s:other_remote, 'path': '/srv/docs/other.md', 'workspace': {},
+      \ 'status': 'ssh:box', 'time': 0}
+doautocmd <nomodeline> User SimpleRemoteBufferRead
+unlet g:simpleremote_event
+call assert_equal(7, line('.'),
+      \ 'the anchor is jumped to once SimpleRemote says the text is there, '
+      \ .. 'and the fenced bait is skipped')
+
+" A second read of the same buffer owes nothing: the anchor was consumed.
+call cursor(1, 1)
+let g:simpleremote_event = {'event': 'SimpleRemoteBufferRead', 'bufnr': s:other_remote}
+doautocmd <nomodeline> User SimpleRemoteBufferRead
+unlet g:simpleremote_event
+call assert_equal(1, line('.'), 'a later fill does not jump again')
+
+" An absolute href names the remote filesystem, not this machine's.
+execute 'buffer ' .. s:remote_buf
+call cursor(5, 1)
+SimpleMarkdownFollow
+call assert_equal('remote:///srv/top.md', bufname('%'),
+      \ 'an absolute link opens that path on the remote host: ' .. bufname('%'))
+
+" A bare #anchor in a remote document is the same as in a local one.
+execute 'buffer ' .. s:remote_buf
+call cursor(7, 6)
+SimpleMarkdownFollow
+call assert_equal(s:remote_buf, bufnr('%'), 'a bare #anchor stays in the remote buffer')
+call assert_equal(1, line('.'), 'and moves to its heading')
+
+" A link to the document itself is a jump, not a reload: with unwritten
+" changes an :edit would be refused, and without them it would throw the text
+" away for SimpleRemote to fetch again.
+call cursor(9, 6)
+setlocal modified
+SimpleMarkdownFollow
+call assert_equal(s:remote_buf, bufnr('%'), 'a link to the document itself stays in it')
+call assert_equal(1, line('.'), 'and jumps to the anchor')
+call assert_true(&modified, 'without touching the buffer')
+setlocal nomodified
+
+" From the preview: the same link, followed with the daemon's link spans.  The
+" target buffer already exists and is filled, so the jump is immediate.
+call win_gotoid(s:remote_win)
+execute 'buffer ' .. s:remote_buf
+SimpleMarkdownOpen
+call assert_true(s:Wait('join(s:PreviewLines(), "\n") =~# "Remote main"', 5000),
+      \ 'the remote document renders: ' .. string(s:PreviewLines()))
+call assert_true(s:PreviewSearch('the other file') > 0, 'the cross-file link renders')
+call simplemarkdown#Activate()
+call assert_equal(s:remote_win, win_getid(), 'following from the preview lands in the source window')
+call assert_equal('remote:///srv/docs/other.md', bufname('%'),
+      \ 'on the remote:// buffer the link names')
+call assert_equal(7, line('.'), 'at the anchored heading')
+SimpleMarkdownClose
+execute 'bwipeout! ' .. s:other_remote
+execute 'bwipeout! ' .. bufnr('remote:///srv/top.md')
+call win_gotoid(s:remote_win)
+bwipeout!
+
 " ----------------------------------------------------------------- teardown ---
 
 call simplemarkdown#Stop()

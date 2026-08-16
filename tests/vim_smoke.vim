@@ -782,6 +782,78 @@ call simplemarkdown#Refresh()
 call assert_true(s:Wait('index(s:PreviewLines(), "▌ Retitled") >= 0', 5000),
       \ 'the document renders again after being emptied: ' .. string(s:PreviewLines()))
 
+" ------------------------------------------------- an acwrite (remote) buffer ---
+
+" SimpleRemote's virtual workspaces open `remote:///abs/path` buffers with
+" 'buftype' acwrite — read and written by an autocommand, and Markdown all the
+" same.  Every entry point used to refuse them because 'buftype' was not empty.
+" Simulated without SimpleRemote on the runtimepath: the name, the 'buftype'
+" and b:vimrc_remote are all the plugin looks at.
+SimpleMarkdownClose
+let g:simplemarkdown_folding = 1
+new
+file remote:///srv/docs/remote.md
+setlocal buftype=acwrite
+call setline(1, ['# Remote title', '', 'body', '', '## Remote second', '', 'more'])
+let b:vimrc_remote = {'path': '/srv/docs/remote.md',
+      \ 'uri': 'remote:///srv/docs/remote.md', 'generation': 1}
+setlocal filetype=markdown
+let s:remote_win = win_getid()
+let s:remote_buf = bufnr('%')
+call assert_equal('expr', &l:foldmethod, 'an acwrite Markdown buffer gets heading folds')
+call assert_equal('simplemarkdown#FoldLevel(v:lnum)', &l:foldexpr)
+
+SimpleMarkdownOpen
+call assert_true(s:PreviewWin() > 0, 'and opens a preview')
+call assert_true(s:Wait('index(s:PreviewLines(), "▌ Remote title") >= 0', 5000),
+      \ 'which renders it: ' .. string(s:PreviewLines()))
+call assert_equal('[SimpleMarkdown] remote.md', bufname(winbufnr(s:PreviewWin())),
+      \ 'the preview is titled after the remote file, with no workspace to name')
+
+" SimpleRemote fills the buffer from a channel callback and announces it with
+" User SimpleRemoteBufferRead rather than with TextChanged.
+call win_gotoid(s:remote_win)
+call setline(1, '# Remote retitled')
+let g:simpleremote_event = {'event': 'SimpleRemoteBufferRead', 'type': 'buffer-read',
+      \ 'bufnr': s:remote_buf, 'path': '/srv/docs/remote.md', 'workspace': {},
+      \ 'status': 'ssh:box', 'time': 0}
+doautocmd <nomodeline> User SimpleRemoteBufferRead
+call assert_true(s:Wait('index(s:PreviewLines(), "▌ Remote retitled") >= 0', 5000),
+      \ 'a SimpleRemoteBufferRead re-renders the preview: ' .. string(s:PreviewLines()))
+unlet g:simpleremote_event
+
+" With SimpleRemote present the title says which workspace the file is in, so
+" a remote README.md is not titled like the local one.
+SimpleMarkdownClose
+function! g:SimpleRemoteStatusline() abort
+  return 'ssh:box:docs@9ms'
+endfunction
+call win_gotoid(s:remote_win)
+SimpleMarkdownOpen
+call assert_equal('[SimpleMarkdown] remote.md @ssh:box:docs@9ms',
+      \ bufname(winbufnr(s:PreviewWin())), 'the preview title names the workspace')
+delfunction g:SimpleRemoteStatusline
+
+" The preview buffer itself is nofile, and 'acwrite' widening the gate must not
+" have let it — or any other scratch buffer — through.
+call assert_equal('nofile', getbufvar(winbufnr(s:PreviewWin()), '&buftype'))
+SimpleMarkdownClose
+tabnew
+setlocal buftype=nofile filetype=markdown
+call setline(1, '# Scratch')
+SimpleMarkdownOpen
+call assert_equal(0, s:PreviewWinForTab(tabpagenr()), 'a nofile buffer is still not a document')
+call assert_true(execute('messages') =~# 'no Markdown buffer in this tab page',
+      \ 'and is refused out loud')
+tabclose!
+let g:simplemarkdown_folding = 0
+call win_gotoid(s:remote_win)
+bwipeout!
+call win_gotoid(s:src_win)
+SimpleMarkdownOpen
+call assert_true(s:Wait('index(s:PreviewLines(), "▌ Retitled") >= 0', 5000),
+      \ 'the local document previews again after the remote one: ' .. string(s:PreviewLines()))
+
 " ----------------------------------------------------------------- teardown ---
 
 SimpleMarkdownClose

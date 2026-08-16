@@ -174,6 +174,204 @@ call s:Ok(s:static =~# '<style>' && s:static =~# 'Kettle',
       \ 'self-contained: its own stylesheet and its own content')
 call s:Ok(s:static =~# '"live":false', 'and its config says nothing is listening')
 
+" ── what a document says it draws ───────────────────────────────────────────
+
+" The list the staging below works from.  Every shape a picture can be written
+" in, each href once, in document order, and nothing from inside a fence — a
+" `![](x.png)` in a Markdown tutorial's code sample draws nothing.
+new
+call setline(1, [
+      \ '![inline](img/one.png)',
+      \ '![titled](img/two.png "A title")',
+      \ '![spaced](<img/three four.png>)',
+      \ '![byref][logo]',
+      \ '![collapsed][]',
+      \ '<p><img alt="raw" src="img/raw.png" width="20"></p>',
+      \ "<IMG SRC='img/upper.png'>",
+      \ '![again](img/one.png)',
+      \ '[not an image](img/link.png)',
+      \ '```',
+      \ '![fenced](img/never.png)',
+      \ '```',
+      \ '~~~',
+      \ '![tilde](img/never2.png)',
+      \ '~~~',
+      \ '',
+      \ '[logo]: img/logo.png',
+      \ '[collapsed]: img/collapsed.png',
+      \ ])
+call s:Ok(simplemarkdown#ImageHrefs(bufnr('%')) == [
+      \ 'img/one.png', 'img/two.png', 'img/three four.png', 'img/logo.png',
+      \ 'img/collapsed.png', 'img/raw.png', 'img/upper.png'],
+      \ 'every image the document draws, once: ' .. string(simplemarkdown#ImageHrefs(bufnr('%'))))
+bwipeout!
+
+" ── a remote document ───────────────────────────────────────────────────────
+
+" A document open through SimpleRemote's virtual workspace is a `remote://`
+" buffer whose directory — and pictures — are on another host.  The plugin
+" stages the pictures the document names into a temporary directory with
+" g:SimpleRemoteDownload() and has the daemon serve *that*, laid out as the
+" URLs the browser will ask for.  SimpleRemote is not on the runtimepath: the
+" download is a stub that copies out of a local tree standing in for the host,
+" asynchronously, as the real one does.
+let s:host = s:tmp .. '/host'
+call mkdir(s:host .. '/srv/docs/img', 'p')
+call mkdir(s:host .. '/srv/shared', 'p')
+call writefile(['PNG-ONE'], s:host .. '/srv/docs/img/one.png')
+call writefile(['PNG-LOGO'], s:host .. '/srv/shared/logo.png')
+call writefile(['PNG-SPACE'], s:host .. '/srv/docs/x y.png')
+let g:simplemarkdown_test_downloads = []
+let g:simplemarkdown_test_download_delay = 30
+function! g:SimpleRemoteDownload(remote, local, opts, Cb) abort
+  call add(g:simplemarkdown_test_downloads, {'remote': a:remote, 'local': a:local,
+        \ 'force': get(a:opts, 'force', v:false)})
+  call timer_start(g:simplemarkdown_test_download_delay,
+        \ {-> s:FinishDownload(a:remote, a:local, a:Cb)})
+  return v:true
+endfunction
+function! s:FinishDownload(remote, local, Cb) abort
+  let l:src = s:host .. a:remote
+  if filereadable(l:src) && isdirectory(fnamemodify(a:local, ':h'))
+    call writefile(readfile(l:src, 'b'), a:local, 'b')
+    call call(a:Cb, [v:true, {'remote': a:remote, 'local': a:local, 'error': ''}])
+  else
+    call call(a:Cb, [v:false, {'remote': a:remote, 'local': a:local, 'error': 'no such file'}])
+  endif
+endfunction
+function! g:SimpleRemoteStatusline() abort
+  return 'ssh:box:srv@9ms'
+endfunction
+
+new
+file remote:///srv/docs/main.md
+setlocal buftype=acwrite bufhidden=hide
+call setline(1, [
+      \ '# Remote pictures',
+      \ '',
+      \ '![one](img/one.png)',
+      \ '![logo](../shared/logo.png)',
+      \ '![space](x%20y.png)',
+      \ '![gone](missing.png)',
+      \ '![web](https://example.com/x.png)',
+      \ '',
+      \ '```',
+      \ '![sample](fenced.png)',
+      \ '```',
+      \ ])
+let b:vimrc_remote = {'path': '/srv/docs/main.md',
+      \ 'uri': 'remote:///srv/docs/main.md', 'generation': 1}
+setlocal nomodified
+setfiletype markdown
+let s:remote_buf = bufnr('%')
+
+SimpleMarkdownExternalOpen
+call s:Ok(s:Wait('len(s:Status()) == 1', 8000), 'a remote document is served')
+let s:entry = s:Status()[0]
+let s:port = str2nr(matchstr(s:entry.url, ':\zs\d\+'))
+call s:Ok(s:entry.remote ==# '/srv/docs/main.md', 'the entry knows the remote path: ' .. string(s:entry))
+call s:Ok(s:entry.path =~# '/simplemarkdown-remote-' .. s:remote_buf .. '/main\.md$',
+      \ 'the daemon was pointed at a staging directory named for the buffer: ' .. s:entry.path)
+call s:Ok(s:entry.name ==# 'main.md @ssh:box:srv@9ms', 'the name says which workspace: ' .. s:entry.name)
+let s:stage = fnamemodify(s:entry.path, ':h')
+
+" What was fetched, where from, and where to.  Every relative href is resolved
+" against the remote directory; the copy lands where the URL the browser will
+" ask for says: `../shared/logo.png` is `/shared/logo.png` once the browser
+" has clamped it at the root.  Nothing with a scheme, and nothing in a fence.
+call s:Ok(len(g:simplemarkdown_test_downloads) == 4,
+      \ 'four transfers, one per fetchable picture: ' .. string(g:simplemarkdown_test_downloads))
+let s:fetched = {}
+for s:d in g:simplemarkdown_test_downloads
+  let s:fetched[s:d.remote] = s:d.local
+  call s:Ok(s:d.force, 'each transfer replaces a stale copy: ' .. string(s:d))
+endfor
+call s:Ok(get(s:fetched, '/srv/docs/img/one.png', '') ==# s:stage .. '/img/one.png',
+      \ 'a relative picture is staged under its own path: ' .. string(s:fetched))
+call s:Ok(get(s:fetched, '/srv/shared/logo.png', '') ==# s:stage .. '/shared/logo.png',
+      \ 'a `../` picture is fetched from the parent and staged where the clamped URL lands')
+call s:Ok(get(s:fetched, '/srv/docs/x y.png', '') ==# s:stage .. '/x y.png',
+      \ 'a percent-encoded href names the decoded file on the host')
+call s:Ok(has_key(s:fetched, '/srv/docs/missing.png'), 'a picture that turns out missing was asked for')
+call s:Ok(s:entry.staged == 3 && s:entry.assets == 4,
+      \ 'three of the four are on this machine: ' .. string(s:entry))
+
+" And the server hands them out.
+call s:Ok(s:Get(s:port, '/') =~# 'Remote pictures', 'the page is served')
+call s:Ok(s:Get(s:port, '/img/one.png') =~# '^200\nPNG-ONE', 'a relative picture is served from the staging directory')
+call s:Ok(s:Get(s:port, '/shared/logo.png') =~# '^200\nPNG-LOGO', 'so is the one above the document')
+call s:Ok(s:Get(s:port, '/x%20y.png') =~# '^200\nPNG-SPACE', 'and the one with a space in its name')
+call s:Ok(s:Get(s:port, '/missing.png') =~# '^404', 'a picture the host does not have is a clean 404')
+call s:Ok(join(simplemarkdown#external#HealthLines(), "\n") =~# 'remote /srv/docs/main.md, 3/4 images staged',
+      \ 'health says what was staged: ' .. string(simplemarkdown#external#HealthLines()))
+
+" A picture the document starts naming later is fetched before the update
+" that shows it is pushed, so the page never asks for it too early.
+call writefile(['PNG-TWO'], s:host .. '/srv/docs/two.png')
+call setline(2, '![two](two.png)')
+call simplemarkdown#OnTextChanged(s:remote_buf)
+call s:Ok(s:Wait('s:Status()[0].staged == 4', 4000), 'the new picture is staged: ' .. string(s:Status()))
+call s:Ok(s:Wait('s:Get(' .. s:port .. ', "/") =~# "alt=\"two\""', 4000), 'and the update reaches the page')
+call s:Ok(s:Get(s:port, '/two.png') =~# '^200\nPNG-TWO', 'served')
+call s:Ok(len(g:simplemarkdown_test_downloads) == 5, 'the pictures already staged were not fetched again')
+
+" The static page inlines them from the same directory.
+let g:simplemarkdown_static_opened = ''
+SimpleMarkdownExternalStatic
+call s:Ok(s:Wait('g:simplemarkdown_static_opened !=# ""', 8000), 'the static page of a remote document is written')
+let s:static = join(readfile(substitute(g:simplemarkdown_static_opened, '^file://', '', '')), "\n")
+call s:Ok(s:static =~# 'alt="one"[^>]*' || s:static =~# 'data:image/png;base64,UE5HLU9ORQo=',
+      \ 'a staged picture travels inside the page as a data: URI')
+call s:Ok(s:static =~# 'data:image/png;base64,UE5HLU9ORQo=', 'img/one.png is inlined')
+call s:Ok(s:static =~# 'data:image/png;base64,UE5HLVNQQUNFCg==', 'x y.png is inlined')
+call s:Ok(s:static =~# 'src="missing.png"', 'a picture that could not be staged stays a link')
+
+SimpleMarkdownExternalClose
+call s:Ok(s:Wait('empty(s:Status())', 4000), 'closing stops the remote preview')
+call s:Ok(!isdirectory(s:stage), 'and removes the staging directory')
+
+" Closed while the pictures are still coming: the serve must not happen.
+let g:simplemarkdown_test_download_delay = 400
+let g:simplemarkdown_test_downloads = []
+SimpleMarkdownExternalOpen
+call s:Ok(!empty(g:simplemarkdown_test_downloads), 'transfers start at once')
+call s:Ok(empty(s:Status()), 'but nothing is served yet')
+SimpleMarkdownExternalClose
+sleep 700m
+call s:Ok(empty(s:Status()), 'a preview closed while staging never opens')
+call s:Ok(!isdirectory(s:stage), 'and its staging directory is gone')
+let g:simplemarkdown_test_download_delay = 30
+
+" Without a SimpleRemote that can download, the document is still served — from
+" an empty staging directory, so a picture is a clean 404 rather than a path on
+" the wrong machine.
+delfunction g:SimpleRemoteDownload
+SimpleMarkdownExternalOpen
+call s:Ok(s:Wait('len(s:Status()) == 1', 8000), 'a remote document is served without g:SimpleRemoteDownload')
+let s:entry = s:Status()[0]
+let s:port = str2nr(matchstr(s:entry.url, ':\zs\d\+'))
+call s:Ok(s:entry.staged == 0 && s:entry.assets == 5, 'nothing could be staged: ' .. string(s:entry))
+call s:Ok(s:Get(s:port, '/img/one.png') =~# '^404', 'and a picture is a clean 404')
+SimpleMarkdownExternalClose
+call s:Ok(s:Wait('empty(s:Status())', 4000), 'closed')
+
+" A SimpleRemote that is not ready refuses a transfer from inside the call —
+" the callback runs before g:SimpleRemoteDownload() has returned false — and
+" every picture refused that way must still add up to a preview that opens.
+function! g:SimpleRemoteDownload(remote, local, opts, Cb) abort
+  call call(a:Cb, [v:false, {'error': 'remote workspace is not ready'}])
+  return v:false
+endfunction
+SimpleMarkdownExternalOpen
+call s:Ok(s:Wait('len(s:Status()) == 1', 8000), 'a document whose pictures are all refused is still served')
+let s:entry = s:Status()[0]
+call s:Ok(s:entry.staged == 0 && s:entry.assets == 5, 'with nothing staged: ' .. string(s:entry))
+SimpleMarkdownExternalClose
+call s:Ok(s:Wait('empty(s:Status())', 4000), 'closed')
+delfunction g:SimpleRemoteDownload
+delfunction g:SimpleRemoteStatusline
+bwipeout!
+
 " ── a buffer with no name ───────────────────────────────────────────────────
 
 enew

@@ -53,6 +53,10 @@ var previews: dict<any> = {}
 # to press the key twice — and the second one, with nothing in `previews` yet to
 # stop it, would start a second server this side could never name again.
 var opening: dict<bool> = {}
+# The subset of `opening` still waiting for its pictures (a remote document,
+# see Stage()): nothing has been asked of the daemon yet, so a Close() takes
+# the whole attempt back rather than leaving a `serve` to be stopped on reply.
+var staging_open: dict<bool> = {}
 
 def Log(message: string)
   simplemarkdown#core#Log('external: ' .. message)
@@ -160,6 +164,7 @@ enddef
 # and because a daemon that has already exited has to be forgotten without
 # being told anything at all.
 def Forget(key: string): dict<any>
+  Unstage(key)
   if !has_key(previews, key)
     return {}
   endif
@@ -191,7 +196,8 @@ enddef
 
 
 def Describe(bufnr: number): string
-  return fnamemodify(bufname(bufnr), ':t') ?? '[No Name]'
+  return (fnamemodify(bufname(bufnr), ':t') ?? '[No Name]')
+    .. simplemarkdown#RemoteSuffix(bufnr)
 enddef
 
 
@@ -253,12 +259,47 @@ export def Open()
     return
   endif
 
+  opening[key] = true
+  var remote = simplemarkdown#RemoteInfo(bufnr)
+  if empty(remote)
+    Serve(bufnr, path)
+    return
+  endif
+  # A remote document's directory is on another host.  Its images are staged
+  # into a local directory first and the daemon serves that; the page opens
+  # once they are there, since a browser asked for a picture that has not
+  # arrived yet shows a broken one until something makes it ask again.
+  staging_open[key] = true
+  Stage(bufnr, remote, simplemarkdown#ImageHrefs(bufnr),
+    () => Serve(bufnr, StagedPath(bufnr, remote)))
+enddef
+
+
+# The `serve` itself, once the directory `path` is in exists on this machine.
+# `opening[key]` was claimed by Open(); it is released here on failure and by
+# OnServed() otherwise — or has been withdrawn in between by a Close(), which
+# for a remote document can arrive while the images are still being fetched.
+def Serve(bufnr: number, path: string)
+  var key = string(bufnr)
+  if has_key(staging_open, key)
+    staging_open->remove(key)
+  endif
+  if !get(opening, key, false) || !bufexists(bufnr)
+    # Withdrawn, or the buffer went away, while the pictures were being
+    # fetched.  `has_key` before the remove: a Close() during staging takes the
+    # whole attempt out of `opening` rather than marking it withdrawn, and
+    # remove() on a key that is not there throws — inside a transfer callback,
+    # which is the worst place for it.
+    if has_key(opening, key)
+      opening->remove(key)
+    endif
+    return
+  endif
   var host: string = simplemarkdown#Setting('simplemarkdown_browser_host')
   var base: number = simplemarkdown#Setting('simplemarkdown_browser_port')
   var session = SessionKey(bufnr)
   var root = AssetRoot(host)
 
-  opening[key] = true
   var sent = simplemarkdown#core#Request({
     type: 'serve',
     session: session,
@@ -279,8 +320,15 @@ enddef
 
 
 def OnServed(bufnr: number, path: string, session: string, reply: dict<any>)
-  var wanted = get(opening, string(bufnr), true)
-  opening->remove(string(bufnr))
+  # Absent rather than false is also "not wanted": Serve() only sends a request
+  # for a key it has just claimed, so the key can only have gone because
+  # `:SimpleMarkdownExternalClose!` replaced the whole table while the port was
+  # being bound.  The has_key() is for the same reason — remove() on a key that
+  # is no longer there throws, and this is a channel callback.
+  var wanted = get(opening, string(bufnr), false)
+  if has_key(opening, string(bufnr))
+    opening->remove(string(bufnr))
+  endif
 
   if get(reply, '_failed', false) || get(reply, 'type', '') !=# 'serve_result'
     # A timeout is the dangerous one: the request was not withdrawn, so the
@@ -307,9 +355,14 @@ def OnServed(bufnr: number, path: string, session: string, reply: dict<any>)
   endif
 
   var url: string = get(reply, 'url', '')
+  var remote = simplemarkdown#RemoteInfo(bufnr)
   previews[string(bufnr)] = {
     bufnr: bufnr,
     path: path,
+    # The remote path of a SimpleRemote document, or ''.  `path` is then the
+    # staging directory's copy — the one the daemon was told about — and this
+    # is what a person reading :SimpleMarkdownHealth wants to see instead.
+    remote: get(remote, 'path', ''),
     session: session,
     url: url,
     # What the page was built with.  Kept so that a later change to one of
@@ -345,7 +398,15 @@ export def Close(all: bool = false)
       # and leaving the request alone would open a browser tab a moment after
       # the user said stop — the first render of a long document is as long as
       # this window gets.
-      opening[key] = false
+      if has_key(staging_open, key)
+        # Still waiting for a remote document's pictures: the daemon has not
+        # been asked for anything, so there is nothing to withdraw on reply.
+        # Whatever transfer is in flight lands in a directory nobody serves.
+        opening->remove(key)
+        Unstage(key)
+      else
+        opening[key] = false
+      endif
       echo '[SimpleMarkdown] the browser preview was still starting; it will not open.'
       return
     endif
@@ -385,7 +446,23 @@ export def Static()
   if !Ready()
     return
   endif
+  var remote = simplemarkdown#RemoteInfo(bufnr)
+  if empty(remote)
+    RequestStatic(bufnr, path)
+    return
+  endif
+  # The daemon inlines the pictures it finds beside the document, so for a
+  # remote one they are staged first and it is pointed at the staging
+  # directory — the page then carries them the way a local document's does.
+  Stage(bufnr, remote, simplemarkdown#ImageHrefs(bufnr),
+    () => RequestStatic(bufnr, StagedPath(bufnr, remote)))
+enddef
 
+
+def RequestStatic(bufnr: number, path: string)
+  if !bufexists(bufnr)
+    return
+  endif
   var page = PageOptions()
   # Nothing is listening: a page written to a file must not spend its life
   # reconnecting to an event stream that was never there.
@@ -435,6 +512,247 @@ def FileUrl(path: string): string
   var escaped = substitute(slashed, '[ "#%?<>^`{|}]',
     (m) => printf('%%%02X', char2nr(m[0])), 'g')
   return 'file://' .. (escaped =~# '^/' ? '' : '/') .. escaped
+enddef
+
+# ─────────────────────────── remote documents ───────────────────────────
+#
+# A document open through SimpleRemote's virtual workspace is a `remote://`
+# buffer: its text is here, its directory is on another host, and so are the
+# pictures beside it.  The daemon serves whatever directory the document's path
+# names, so for such a document it is handed a staging directory instead — a
+# per-buffer temporary directory the referenced images are downloaded into,
+# with g:SimpleRemoteDownload() — and a path inside it standing in for the
+# document.  The same directory feeds :SimpleMarkdownExternalStatic, whose
+# pictures the daemon inlines from beside the document.
+#
+# The staging directory is laid out as the *URLs* the browser will ask for, not
+# as the remote tree.  A browser resolves `../assets/logo.png` against the
+# page's URL and clamps it at `/`, so what reaches the server is
+# `/assets/logo.png`; the copy of `<remote dir>/../assets/logo.png` therefore
+# has to be at `<staging>/assets/logo.png`, and the same clamp is what the
+# server's own safe_join enforces.  Nothing outside the staging directory is
+# ever served, whatever the document says.
+#
+# What is fetched is what the document referred to when the preview opened plus
+# whatever it names later (see Push()); a picture that changes on the host
+# after that is not fetched again until the preview is reopened.
+
+# Enough for a document that is a screenshot gallery, and few enough that a
+# generated report with a thousand plots is not a thousand transfers over SSH
+# before anything is shown.
+const REMOTE_ASSET_MAX = 64
+# All of one document's staged pictures together; past this the rest are left
+# unstaged rather than filling a temporary directory.
+const REMOTE_ASSET_MAX_BYTES = 64 * 1024 * 1024
+
+# source bufnr (as a string) -> staging
+#   dir      the staging directory
+#   assets   href -> {remote, local, state: 'pending' | 'ok' | 'failed' | 'skipped', bytes}
+#   pending  transfers in flight
+#   bytes    what the 'ok' ones add up to
+#   waiters  what to call once nothing is in flight
+var staging: dict<any> = {}
+
+
+# The staging directory of `bufnr`, made if it is not there.  Under Vim's own
+# temporary directory, so it goes when Vim does; per buffer, so two remote
+# documents named README.md do not stage over each other.
+def StageDir(bufnr: number): string
+  var dir = fnamemodify(tempname(), ':h') .. '/simplemarkdown-remote-' .. bufnr
+  if !isdirectory(dir)
+    mkdir(dir, 'p')
+  endif
+  return dir
+enddef
+
+
+# What the daemon is told the document is called: a path inside the staging
+# directory carrying the document's own name, so that the served root is the
+# staging directory and the tab is titled after the file.  Nothing is written
+# there — the daemon renders the buffer's lines, not a file.
+def StagedPath(bufnr: number, remote: dict<any>): string
+  return StageDir(bufnr) .. '/' .. fnamemodify(remote.path, ':t')
+enddef
+
+
+# `%2e` and friends, decoded — the browser will send the URL encoded and the
+# server decodes it before looking in the directory, so the copy has to be
+# stored under the decoded name; and a document that wrote `my%20plot.png`
+# means the file called `my plot.png` on the host.  A `%` that is not an escape
+# is left alone rather than refused: it is a character a file name may have.
+def PercentDecode(text: string): string
+  return substitute(text, '%\(\x\x\)', (m) => nr2char(str2nr(m[1], 16)), 'g')
+enddef
+
+
+# `href` as the browser will ask for it: resolved against `/` with `.` and `..`
+# removed the way RFC 3986 says — a `..` at the root is dropped, which is the
+# clamp — and without any query or fragment.  Always begins with `/`; `/` alone
+# is a URL that names no file.
+def UrlPath(href: string): string
+  var bare = PercentDecode(substitute(href, '[?#].*$', '', ''))
+  var parts: list<string> = []
+  for part in split(bare, '/')
+    if part ==# '.'
+      continue
+    elseif part ==# '..'
+      if !empty(parts)
+        remove(parts, -1)
+      endif
+    else
+      add(parts, part)
+    endif
+  endfor
+  return '/' .. join(parts, '/')
+enddef
+
+
+# Where `href`, written in the remote document at `remote_path`, is on the
+# host: absolute hrefs name its filesystem, relative ones the document's
+# directory.  simplify() rather than the URL clamp: `../` here really does
+# mean the parent directory, and it is the *copy* that has to land where the
+# clamp says.
+def RemoteAssetPath(remote_path: string, href: string): string
+  var bare = PercentDecode(substitute(href, '[?#].*$', '', ''))
+  if bare =~# '^/'
+    return simplify(bare)
+  endif
+  var dir = fnamemodify(remote_path, ':h')
+  return simplify(dir ==# '/' ? '/' .. bare : dir .. '/' .. bare)
+enddef
+
+
+# Whether an href names a file beside the document at all.  Anything with a
+# scheme (`https:`, `data:`, `mailto:`) or a host (`//cdn/…`) is the browser's
+# to fetch, and a bare `#fragment` or `?query` names the page itself.
+def IsFetchable(href: string): bool
+  return href !~# '^\a[[:alnum:]+.-]*:' && href !~# '^//' && href !~# '^[?#]'
+    && UrlPath(href) !=# '/'
+enddef
+
+
+# Fetch the images among `hrefs` that are not already staged for `bufnr`, then
+# call Then — at once when there is nothing to fetch.  Concurrent callers share
+# the transfers: Then joins the waiters and everybody is called when the last
+# one lands.
+def Stage(bufnr: number, remote: dict<any>, hrefs: list<string>, Then: func)
+  var key = string(bufnr)
+  if !has_key(staging, key)
+    staging[key] = {dir: StageDir(bufnr), assets: {}, pending: 0, bytes: 0, waiters: []}
+  endif
+  var stage = staging[key]
+  add(stage.waiters, Then)
+  var can = exists('*g:SimpleRemoteDownload')
+  # Held while the loop runs: SimpleRemote answers a transfer it refuses —
+  # not connected, nothing to run — from inside the call, and a first picture
+  # refused that way would otherwise settle the whole batch before the second
+  # had been asked for.
+  stage.pending += 1
+  for each in hrefs
+    # Copied: a lambda in a :for captures the loop variable itself, which by
+    # the time a transfer lands holds the last href of the loop, not this one.
+    var href = each
+    if has_key(stage.assets, href) || !IsFetchable(href)
+      continue
+    endif
+    var local = stage.dir .. UrlPath(href)
+    var asset = {
+      remote: RemoteAssetPath(remote.path, href),
+      local: local,
+      state: 'pending',
+      bytes: 0,
+    }
+    stage.assets[href] = asset
+    if !can || len(stage.assets) > REMOTE_ASSET_MAX || stage.bytes >= REMOTE_ASSET_MAX_BYTES
+      asset.state = 'skipped'
+      continue
+    endif
+    # The transfer writes the file; the directory it goes in is this side's job,
+    # and `a/b/c.png` under a staging directory that has never seen `a/` is the
+    # ordinary case.
+    var parent = fnamemodify(local, ':h')
+    if !isdirectory(parent)
+      mkdir(parent, 'p')
+    endif
+    stage.pending += 1
+    # `force`: a preview reopened after the plot was regenerated must show the
+    # new plot, and the stale copy from last time is exactly what is there.
+    var started = g:SimpleRemoteDownload(asset.remote, local, {force: true},
+      (ok, result) => OnStaged(key, href, !!ok, result))
+    if !started && asset.state ==# 'pending'
+      # Refused without the callback having been called — SimpleRemote calls it
+      # even then, but a refusal is a refusal from anybody — so no answer is
+      # coming and the transfer is accounted for here.
+      stage.pending -= 1
+      asset.state = 'failed'
+    endif
+  endfor
+  stage.pending -= 1
+  Settle(key)
+enddef
+
+
+def OnStaged(key: string, href: string, ok: bool, result: any)
+  if !has_key(staging, key)
+    # Closed while the transfer was in flight; the file may have landed in a
+    # directory nobody is serving any more, which is fine.
+    return
+  endif
+  var stage = staging[key]
+  stage.pending = max([0, stage.pending - 1])
+  var asset = get(stage.assets, href, {})
+  if !empty(asset)
+    var size = ok ? max([0, getfsize(asset.local)]) : 0
+    if ok && stage.bytes + size > REMOTE_ASSET_MAX_BYTES
+      # Over budget: the file is dropped rather than served, and the budget is
+      # what stops the next one being fetched at all.
+      delete(asset.local)
+      asset.state = 'skipped'
+      stage.bytes = REMOTE_ASSET_MAX_BYTES
+      Log(printf('%s: %s not staged, over %d bytes for the document', key, href,
+        REMOTE_ASSET_MAX_BYTES))
+    elseif ok
+      asset.state = 'ok'
+      asset.bytes = size
+      stage.bytes += size
+    else
+      asset.state = 'failed'
+      Log(printf('%s: %s not staged: %s', key, href,
+        type(result) == v:t_dict ? get(result, 'error', 'transfer failed') : string(result)))
+    endif
+  endif
+  Settle(key)
+enddef
+
+
+# Nothing in flight: everybody who was waiting for that is told, in order.  Each
+# waiter is removed before it is called, so one that stages more (Push() does)
+# queues itself afresh rather than being called twice.
+def Settle(key: string)
+  if !has_key(staging, key)
+    return
+  endif
+  var stage = staging[key]
+  while stage.pending == 0 && !empty(stage.waiters)
+    var Then: func = remove(stage.waiters, 0)
+    Then()
+  endwhile
+enddef
+
+
+def Unstage(key: string)
+  if has_key(staging_open, key)
+    staging_open->remove(key)
+  endif
+  if !has_key(staging, key)
+    return
+  endif
+  var stage = staging->remove(key)
+  # Waiters are dropped rather than called: what they were going to do was
+  # serve or push a preview that has just been closed.
+  if stage.dir =~# '/simplemarkdown-remote-\d\+$' && isdirectory(stage.dir)
+    delete(stage.dir, 'rf')
+  endif
 enddef
 
 # ─────────────────────────── keeping it fed ───────────────────────────
@@ -494,6 +812,33 @@ def Push(key: string)
     # a document: the page would go blank and stay blank, since a buffer nobody
     # loads again never produces another change to undo it.  The preview keeps
     # showing what it last had, which is what the buffer last said.
+    return
+  endif
+  # A remote document that now names a picture it did not before: fetch it,
+  # then push.  Pushed first, the page would ask for the file before it was
+  # there and keep the broken image it got — an update that changes no block
+  # is a splice of nothing, and does not make it ask again.  The delay is one
+  # transfer, only on the edits that add an image, and never for a picture
+  # already staged or already known to be missing.
+  var remote = simplemarkdown#RemoteInfo(preview.bufnr)
+  if !empty(remote) && has_key(staging, key)
+    var missing = filter(simplemarkdown#ImageHrefs(preview.bufnr),
+      (_, href) => !has_key(staging[key].assets, href))
+    if !empty(missing)
+      Stage(preview.bufnr, remote, missing, () => Update(key))
+      return
+    endif
+  endif
+  Update(key)
+enddef
+
+
+def Update(key: string)
+  if !has_key(previews, key)
+    return
+  endif
+  var preview = previews[key]
+  if !bufexists(preview.bufnr) || !bufloaded(preview.bufnr)
     return
   endif
   simplemarkdown#core#Send({
@@ -622,7 +967,13 @@ export def StopAll()
   for key in keys(previews)
     Forget(key)
   endfor
+  # A staging directory with no preview — :SimpleMarkdownExternalStatic on a
+  # remote document leaves one — goes too.
+  for key in keys(staging)
+    Unstage(key)
+  endfor
   opening = {}
+  staging_open = {}
   # Sent whether or not this side thought it had anything, and as one message
   # rather than one per preview.  `:SimpleMarkdownExternalClose!` is reached for
   # precisely when the two tables have drifted — a server this side has lost
@@ -656,11 +1007,17 @@ export def Status(): list<any>
   Prune()
   var out: list<any> = []
   for preview in values(previews)
+    var stage = get(staging, string(preview.bufnr), {})
     add(out, {
       bufnr: preview.bufnr,
       name: Describe(preview.bufnr),
       url: preview.url,
       path: preview.path,
+      remote: get(preview, 'remote', ''),
+      # How many of the remote document's pictures are on this machine, of how
+      # many it names; 0/0 for a local document.
+      staged: len(filter(values(get(stage, 'assets', {})), (_, a) => a.state ==# 'ok')),
+      assets: len(get(stage, 'assets', {})),
     })
   endfor
   return sort(out, (a, b) => a.bufnr - b.bufnr)
@@ -674,7 +1031,9 @@ export def HealthLines(): list<string>
     served ? 'served by the daemon'
       : 'this daemon cannot serve; run ./install.sh, then :SimpleMarkdownRestart'))
   for entry in Status()
-    add(lines, printf('[INFO] browser preview: %s -> %s', entry.name, entry.url))
+    add(lines, printf('[INFO] browser preview: %s -> %s%s', entry.name, entry.url,
+      entry.remote ==# '' ? ''
+        : printf(' (remote %s, %d/%d images staged)', entry.remote, entry.staged, entry.assets)))
   endfor
   return lines
 enddef

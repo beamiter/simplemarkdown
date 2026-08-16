@@ -16,8 +16,9 @@ CONTENTS                                             *simplemarkdown-contents*
     7. Highlighting ................ |simplemarkdown-highlighting|
     8. Supported Markdown .......... |simplemarkdown-markdown|
     9. External preview ............ |simplemarkdown-external|
-   10. Architecture ................ |simplemarkdown-architecture|
-   11. Troubleshooting ............. |simplemarkdown-troubleshooting|
+   10. Remote workspaces ........... |simplemarkdown-remote|
+   11. Architecture ................ |simplemarkdown-architecture|
+   12. Troubleshooting ............. |simplemarkdown-troubleshooting|
 
 ==============================================================================
 1. INTRODUCTION                                  *simplemarkdown-introduction*
@@ -951,8 +952,112 @@ self-contained than the files it is allowed to read.
 |:SimpleMarkdownHealth| reports whether the daemon can serve and lists every URL
 currently being served.
 
+A document opened through SimpleRemote lives on another host, so its pictures
+are fetched before the page is served; see |simplemarkdown-remote-images|.
+
 ==============================================================================
-10. ARCHITECTURE                                 *simplemarkdown-architecture*
+10. REMOTE WORKSPACES                                  *simplemarkdown-remote*
+
+SimpleRemote (https://github.com/beamiter/simpleremote) opens SSH and Docker
+workspaces in Vim.  Previewing a document in one needs no configuration, and
+nothing here requires SimpleRemote to be installed: every hook is
+feature-detected and inert when nothing fires it.
+
+Projected workspaces (sshfs, docker-bind, local-map) open ordinary local files
+under the workspace's local root, and nothing below applies to them — they are
+files, and this plugin previews files.
+
+A virtual workspace opens each remote file as a buffer named
+`remote:///abs/path` with 'buftype' "acwrite" — read and written by an
+autocommand rather than by Vim — and `b:vimrc_remote` = {path, uri,
+generation}.  SimpleMarkdown treats such a buffer as a document:
+
+- "acwrite" is an eligible 'buftype'.  |:SimpleMarkdown|,
+  |g:simplemarkdown_auto_open|, |g:simplemarkdown_folding|,
+  |:SimpleMarkdownToc|, |:SimpleMarkdownLint|, the authoring commands and both
+  previews all work on a remote:// buffer.  Every other 'buftype' — nofile,
+  quickfix, help, terminal, and this plugin's own preview window — is still
+  refused.  netrw's `scp://` buffers and other BufReadCmd-based providers are
+  covered by the same rule; nothing here is specific to SimpleRemote.
+- The plugin listens for |User| SimpleRemoteBufferRead, which SimpleRemote
+  fires with the buffer number in `g:simpleremote_event` once a remote://
+  buffer has been (re)filled.  That is what makes the text that has just
+  arrived reach the previews: SimpleRemote fills the buffer from a channel
+  callback, whose setbufline() fires no TextChanged, and a re-read keeps the
+  'filetype', so no FileType fires either.
+- Nothing is rendered on the remote host.  The daemon is fed getbufline(),
+  never a path, so layout, syntax highlighting, the outline, the linter, the
+  table formatter and the structural edits all run locally on the buffer's
+  text.  Writes go back through SimpleRemote's BufWriteCmd and are none of
+  this plugin's business.
+
+                                                 *simplemarkdown-remote-links*
+Following a link ~
+
+|:SimpleMarkdownFollow| — and <CR> or `gx` in the preview — resolves a link
+written in a remote document against the remote path rather than against this
+machine's filesystem.  Beside `/srv/docs/main.md`, `./other.md` opens
+`remote:///srv/docs/other.md`; an absolute `/srv/top.md` names the remote
+filesystem, not the local one.  `.` and `..` are collapsed with the scheme
+stripped off, so a link through a parent directory cannot end up as a second
+buffer for a file that is already open.  Nothing is checked for local
+readability — there is none to check — and a target that is not there is
+reported by SimpleRemote's own read.
+
+`other.md#section` still means that section.  The buffer that has just been
+opened is filled asynchronously, so the anchor jump is owed until
+SimpleRemoteBufferRead says the headings have arrived, and then made.  A link
+into the document you are already reading is a jump: the buffer is not
+re-read, which would throw away unwritten changes and fetch the file again.
+
+                                                *simplemarkdown-remote-images*
+Pictures in the browser preview ~
+
+The browser preview (|simplemarkdown-external|) serves the directory the
+document is in, and for a remote document that directory is on another host.
+So every picture the document refers to — `![](img/one.png)`, a reference
+image, a raw `<img src=...>` tag — is downloaded into a staging directory of
+its own under Vim's temporary directory with `g:SimpleRemoteDownload()`, and
+the daemon is pointed at that directory instead.  Pictures inside a fenced
+code block are text and are not fetched.
+
+The staging directory is laid out as the URLs the browser will ask for, not as
+the remote tree.  A browser resolves `../assets/logo.png` against the page's
+URL and clamps it at `/`, so what reaches the server is `/assets/logo.png` and
+that is where the copy of `<document dir>/../assets/logo.png` is staged.
+Percent escapes are decoded, because the server decodes them before it looks
+in the directory: `my%20plot.png` in the document is the file `my plot.png` on
+the host.  Nothing outside the staging directory is served, whatever the
+document says.
+
+At most 64 pictures and 64 MB are fetched for one document; anything past that
+is left unstaged and its `<img>` is a clean 404.  What is fetched is what the
+document referred to when the preview opened plus whatever it names later — an
+edit that adds a picture fetches it before the update that would show it is
+pushed, since a browser that asks for a file too early keeps the broken image
+it got.  A picture already staged is not fetched again while the preview is
+open; reopen the preview to pick up one that changed on the host.
+
+|:SimpleMarkdownExternalStatic| stages the same way and the daemon then
+inlines the staged pictures into the page as `data:` URIs, so the one-shot
+page of a remote document is as self-contained as a local one's.
+
+Without a SimpleRemote that can download — an older one, or a workspace not
+connected — the document is still served, from an empty staging directory, so
+a picture is a clean 404 rather than a path on the wrong machine.
+|:SimpleMarkdownHealth| names the remote path of each served document and how
+many of its pictures are on this machine.
+
+                                                *simplemarkdown-remote-titles*
+Which host a document is on ~
+
+The preview window and the browser tab of a document in a workspace are titled
+with what `g:SimpleRemoteStatusline()` names — `[SimpleMarkdown] README.md
+@ssh:box:docs@9ms` — so a remote README.md is not titled like the local one.
+Projected buffers get the suffix too, through `b:simpleremote_path`.
+
+==============================================================================
+11. ARCHITECTURE                                 *simplemarkdown-architecture*
 
 The plugin talks to `simplemarkdown-daemon` over JSON lines on stdin/stdout,
 supervised by simplecore — the same daemon supervisor the rest of the simple*
@@ -1032,7 +1137,7 @@ highlighting is the most expensive thing in a render by a wide margin, and it
 is almost never what changed.
 
 ==============================================================================
-11. TROUBLESHOOTING                           *simplemarkdown-troubleshooting*
+12. TROUBLESHOOTING                           *simplemarkdown-troubleshooting*
 
 "daemon simplemarkdown-daemon not found"
     The backend has not been built.  Run `./install.sh` in the plugin
@@ -1083,6 +1188,18 @@ Editing a very large document does not live-update
 The browser preview does not follow my typing
     |g:simplemarkdown_browser_live| is 0, so it follows `:w` instead.  See
     |simplemarkdown-external-save|.
+
+Pictures are missing in the browser preview of a remote document
+    They are downloaded from the host before the page is served, and
+    |:SimpleMarkdownHealth| says how many arrived.  A workspace that is not
+    connected, a SimpleRemote without `g:SimpleRemoteDownload()`, and a
+    document past the 64-picture or 64 MB cap all end the same way: a clean
+    404 in the page.  See |simplemarkdown-remote-images|.
+
+A picture replaced on the remote host still shows the old one
+    A staged copy lives as long as the preview does, because re-fetching every
+    picture on every keystroke is a transfer per keystroke.  Close the browser
+    preview and open it again.
 
 Maths shows as `$x^2$` in the browser
     The typesetting engine is loaded from a CDN and did not arrive.  The page

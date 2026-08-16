@@ -87,6 +87,10 @@ simplemarkdown-introduction	simplemarkdown.txt	/*simplemarkdown-introduction*
 simplemarkdown-links	simplemarkdown.txt	/*simplemarkdown-links*
 simplemarkdown-mappings	simplemarkdown.txt	/*simplemarkdown-mappings*
 simplemarkdown-markdown	simplemarkdown.txt	/*simplemarkdown-markdown*
+simplemarkdown-remote	simplemarkdown.txt	/*simplemarkdown-remote*
+simplemarkdown-remote-images	simplemarkdown.txt	/*simplemarkdown-remote-images*
+simplemarkdown-remote-links	simplemarkdown.txt	/*simplemarkdown-remote-links*
+simplemarkdown-remote-titles	simplemarkdown.txt	/*simplemarkdown-remote-titles*
 simplemarkdown-simplecore	simplemarkdown.txt	/*simplemarkdown-simplecore*
 simplemarkdown-troubleshooting	simplemarkdown.txt	/*simplemarkdown-troubleshooting*
 simplemarkdown-usage	simplemarkdown.txt	/*simplemarkdown-usage*

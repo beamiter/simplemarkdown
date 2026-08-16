@@ -6,6 +6,58 @@ All notable changes to this project are documented here.  The format follows
 
 ## [Unreleased]
 
+### SimpleRemote 远程工作区
+
+全部特性检测:没装 SimpleRemote 时这几条代码一行都到不了,测试也是在 runtimepath
+上没有它的情况下跑的。sshfs / docker-bind / local-map 这些投影模式开出来的本来就
+是本地文件,下面说的都是虚拟模式。
+
+- **`IsMarkdownBuffer()` 只认 `'buftype'` 为空的 buffer**,而 SimpleRemote 的
+  `remote:///abs/path` 是 `acwrite`(由 autocommand 读写,不由 Vim 读写),于是
+  *每一个*入口都拒绝它:`:SimpleMarkdown` 回答"这个 tab page 里没有 Markdown
+  buffer",auto-open 不开,折叠不装,存盘不 lint,目录、大纲、表格格式化、标题升
+  降级、列表重编号一律"not a Markdown buffer"。现在 `acwrite` 也算文档——netrw 的
+  `scp://` 和别的 BufReadCmd 型 buffer 顺带受益——nofile / quickfix / help /
+  terminal(以及本插件自己的预览窗)照旧拒绝,那才是这道闸门原本要挡的东西。
+
+- **链接按远端路径解析。** 过去 `fnamemodify('remote:///a/b.md', ':p:h')` 得到
+  `remote:///a`,拼出来的 `remote:///a/other.md` 再交给 `filereadable()`——远端文件
+  在本地当然读不到——于是 `:SimpleMarkdownFollow` 和预览里的 `<CR>` 只会说一句
+  "cannot open"。现在远端文档的链接相对远端路径解析,绝对链接指的是远端文件系统,
+  `..` 在去掉 scheme 之后才 `simplify()`(否则 `///` 会被压成 `/`,同一个文件开出
+  两个 buffer),直接 `:edit remote://…` 交给 SimpleRemote 的 BufReadCmd。
+  `other.md#section` 的锚点跳转欠着,等 `SimpleRemoteBufferRead` 说文本到了再跳;
+  指向文档自己的链接是跳转,不重读 buffer(否则会丢掉未写盘的修改)。
+
+- **浏览器预览的图片。** 守护进程伺服的是文档所在的目录,而远端文档的目录在另一台
+  机器上,于是每张图片都 404——页面、目录、代码高亮、live sync 全好,只有图片全坏。
+  现在文档引用的图片(`![](x.png)`、reference 链接、裸 `<img src=…>`;fenced 里的
+  不算)先用 `g:SimpleRemoteDownload()` 下载到每个 buffer 自己的暂存目录,再让守护
+  进程伺服那个目录。暂存目录**按浏览器会请求的 URL 布局,不按远端目录树**:浏览器
+  把 `../assets/logo.png` 夹在根上,发出来的是 `/assets/logo.png`,副本就得放在
+  `<暂存>/assets/logo.png`——这跟服务端 `safe_join` 的夹取是同一条规则;percent
+  转义先解码,因为服务端也是解码之后才去目录里找。单篇最多 64 张、64 MB,超出的
+  保持未暂存,页面上是一个干净的 404。编辑中新出现的图片先取回再推送更新(先推
+  的话页面会去要一个还不存在的文件,然后一直挂着那张坏图)。
+  `:SimpleMarkdownExternalStatic` 走同一个暂存目录,于是远端文档的单文件页面和本地
+  文档的一样自包含。没有 `g:SimpleRemoteDownload()`(旧版 SimpleRemote,或工作区没
+  连上)时文档照样伺服,只是暂存目录是空的——图片是干净的 404,而不是另一台机器上
+  的路径。`:SimpleMarkdownHealth` 报出远端路径和"到位几张/共几张"。
+
+- **监听 `User SimpleRemoteBufferRead`。** SimpleRemote 是在 channel 回调里
+  `setbufline()` 填 buffer 的,那不触发 `TextChanged`;重读一遍 `'filetype'` 没变,
+  `FileType` 也不再触发。收到事件就按一次编辑处理,两个预览都跟上。autocmd 无条件
+  注册:没人发的事件不花钱。
+
+- 预览窗标题和浏览器标签页带上 `g:SimpleRemoteStatusline()`——
+  `[SimpleMarkdown] README.md @ssh:box:docs@9ms`——远端的 README.md 不再和本地的
+  那个同名。投影模式的 buffer 通过 `b:simpleremote_path` 同样带。
+
+- 顺手修掉一个跟远程无关的老毛病:`serve` 还在路上时 `:SimpleMarkdownExternalClose!`
+  会把 `opening` 整张表换掉,回调回来 `remove()` 一个已经不在的 key 会抛 E716——
+  而且那次 `serve` 依旧会开出浏览器标签页。现在"key 不在"就等于"不要了",端口用
+  `serve_stop` 收回。
+
 ### 收尾:几处按住不动就会一直付的钱
 
 - **`split_word` 对单个不可断的长串是二次的。** 每切出一块都用 `..run.clone()`

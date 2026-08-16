@@ -118,4 +118,10 @@ augroup SimpleMarkdown
   if exists('##OptionSet')
     autocmd OptionSet filetype,buftype try | call simplemarkdown#OnContextChanged() | catch | endtry
   endif
+  # SimpleRemote fills a remote:// buffer from a channel callback and says so
+  # with this event; it is not a TextChanged, and FileType does not fire again
+  # for a re-read.  Registered whether or not SimpleRemote is installed: an
+  # event nothing fires costs nothing.
+  autocmd User SimpleRemoteBufferRead
+    \ try | call simplemarkdown#OnRemoteBufferRead(get(get(g:, 'simpleremote_event', {}), 'bufnr', 0)) | catch | endtry
 augroup END

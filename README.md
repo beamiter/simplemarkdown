@@ -210,6 +210,31 @@ replacement costs one tokio feature (`net`) — and the three crates tokio bring
 with it for sockets — rather than a web framework, a file watcher and a
 clipboard stack.
 
+## In a remote workspace
+
+[simpleremote](https://github.com/beamiter/simpleremote) opens SSH and Docker
+workspaces in Vim. Previewing a document in one needs no configuration, and
+none of it requires simpleremote to be installed — every hook is
+feature-detected and inert when nothing fires it.
+
+Its projected modes (sshfs, docker-bind, local-map) open ordinary local files,
+so there is nothing to say about them. Virtual mode opens `remote:///abs/path`
+buffers with `'buftype'` `acwrite`, and those are documents here: the preview,
+auto-open, folding, the outline, the linter and the authoring commands all
+work on one, and `User SimpleRemoteBufferRead` is what makes text that arrived
+from a channel callback reach the preview — a callback's `setbufline()` fires
+no `TextChanged`. Nothing is rendered on the remote host; the daemon is fed
+`getbufline()`, never a path.
+
+Two things needed more than that. A link written in a remote document is
+resolved against the **remote** path and opened as another `remote://` buffer,
+with the `#anchor` jump owed until the text arrives. And the browser preview
+serves the directory the document is in — which is on another host — so every
+picture the document refers to is downloaded into a staging directory laid out
+as the URLs the browser will ask for, and the daemon is pointed at that.
+`:help simplemarkdown-remote` has the caps, the clamping rule and what happens
+without a connection.
+
 ## What it renders
 
 CommonMark plus the GitHub extensions that come up in practice — tables with
