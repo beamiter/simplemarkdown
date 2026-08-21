@@ -1236,7 +1236,9 @@ Maths shows as `$x^2$` in the browser
 DAEMON COMMAND LINE                                *simplemarkdown-daemon-cli*
 
 The daemon takes no arguments in normal use: the plugin starts it and speaks
-JSON over its stdin and stdout.  For diagnosis it also answers: >
+JSON over its stdin and stdout.  One UTF-8 request line is limited to 64 MiB;
+an oversized record is rejected without losing the next record.  For
+diagnosis it also answers: >
 
   simplemarkdown-daemon --version
   simplemarkdown-daemon --help

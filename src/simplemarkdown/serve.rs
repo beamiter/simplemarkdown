@@ -1154,6 +1154,19 @@ async fn respond_empty(stream: &mut TcpStream, status: &str) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Removes filesystem fixtures even when an async test panics while
+    /// binding its listener or checking a response.
+    struct TempArtifacts(Vec<PathBuf>);
+
+    impl Drop for TempArtifacts {
+        fn drop(&mut self) {
+            for path in self.0.iter().rev() {
+                let _ = std::fs::remove_file(path);
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+
     /// Rendered rather than hand-built, so that the block index every patch is
     /// computed from is the one the emitter really produces.
     fn rendered(markdown: &str) -> Page {
@@ -1546,11 +1559,10 @@ mod tests {
         std::fs::create_dir_all(&notes).expect("a document directory");
         std::fs::create_dir_all(&assets).expect("an asset directory");
         std::fs::write(assets.join("logo.png"), b"\x89PNG\r\n\x1a\n").expect("a picture");
-        std::fs::write(
-            std::env::temp_dir().join(format!("simplemarkdown-outside-{}", std::process::id())),
-            b"not yours",
-        )
-        .expect("a file above both roots");
+        let outside =
+            std::env::temp_dir().join(format!("simplemarkdown-outside-{}", std::process::id()));
+        let _fixtures = TempArtifacts(vec![base.clone(), outside.clone()]);
+        std::fs::write(&outside, b"not yours").expect("a file above both roots");
 
         std::fs::write(notes.join("near.png"), b"\x89PNG\r\n\x1a\n").expect("a local picture");
 
@@ -1588,7 +1600,6 @@ mod tests {
         }
 
         server.stop();
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// The `Host` check, which is the whole of this server's defence against
@@ -1632,6 +1643,7 @@ mod tests {
     async fn assets_come_from_the_document_directory_and_nowhere_else() {
         let base =
             std::env::temp_dir().join(format!("simplemarkdown-serve-{}", std::process::id()));
+        let _fixtures = TempArtifacts(vec![base.clone()]);
         let root = base.join("notes");
         std::fs::create_dir_all(&root).expect("a directory to serve from");
         std::fs::write(root.join("diagram.png"), b"\x89PNG\r\n\x1a\n").expect("an asset");
@@ -1671,7 +1683,6 @@ mod tests {
         }
 
         server.stop();
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// The failure this module is most anxious about is a stream that has gone

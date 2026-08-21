@@ -145,9 +145,11 @@ check-protocol: build
 # a channel callback — the worst place to find out — so the two lists are
 # compared here rather than discovered at render time.
 check-classes: build
-	@./target/release/simplemarkdown-daemon --classes > /tmp/simplemarkdown-rust-classes
-	@vim -Nu NONE -n -i NONE -es -S tests/classes.vim > /tmp/simplemarkdown-vim-classes
-	@diff -u /tmp/simplemarkdown-rust-classes /tmp/simplemarkdown-vim-classes \
+	@set -e; tmp="$$(mktemp -d "$${TMPDIR:-/tmp}/simplemarkdown-classes.XXXXXX")" || exit 1; \
+	trap 'rm -rf "$$tmp"' 0 1 2 3 15; \
+	./target/release/simplemarkdown-daemon --classes > "$$tmp/rust"; \
+	vim -Nu NONE -n -i NONE -es -S tests/classes.vim > "$$tmp/vim"; \
+	diff -u "$$tmp/rust" "$$tmp/vim" \
 		&& echo "classes: Rust and Vim agree"
 
 # The diagnostic codes are a closed set for the same reason the property
@@ -155,12 +157,15 @@ check-classes: build
 # is one a reader cannot act on.  `--codes` is what the daemon can emit; the
 # help is where a user looks it up; this is what keeps them the same set.
 check-codes: build
-	@./target/release/simplemarkdown-daemon --codes | cut -f1 > /tmp/simplemarkdown-codes
-	@while read -r code; do \
+	@set -e; tmp="$$(mktemp -d "$${TMPDIR:-/tmp}/simplemarkdown-codes.XXXXXX")" || exit 1; \
+	trap 'rm -rf "$$tmp"' 0 1 2 3 15; \
+	./target/release/simplemarkdown-daemon --codes > "$$tmp/raw-codes"; \
+	cut -f1 "$$tmp/raw-codes" > "$$tmp/codes"; \
+	while read -r code; do \
 		grep -q "^    $$code " doc/simplemarkdown.txt \
 			|| { echo "diagnostic $$code is not documented in doc/simplemarkdown.txt"; exit 1; }; \
-	done < /tmp/simplemarkdown-codes
-	@echo "codes: every diagnostic the daemon can emit is documented"
+	done < "$$tmp/codes"; \
+	echo "codes: every diagnostic the daemon can emit is documented"
 
 # Every `g:` option is read through simplemarkdown#Setting(), which answers a
 # name the settings table does not declare with an exception — the right answer
@@ -170,19 +175,21 @@ check-codes: build
 # (That the table and the *help* are the same set is asserted from Vim, in
 # tests/vim_config.vim, where the table can be asked rather than parsed.)
 check-settings:
-	@sed -n "s/^  {name: '\([a-z_]*\)'.*/\1/p" autoload/simplemarkdown.vim \
-		| sort -u > /tmp/simplemarkdown-settings-declared
-	@grep -ho "Setting('[a-z_]*')" \
+	@set -e; tmp="$$(mktemp -d "$${TMPDIR:-/tmp}/simplemarkdown-settings.XXXXXX")" || exit 1; \
+	trap 'rm -rf "$$tmp"' 0 1 2 3 15; \
+	sed -n "s/^  {name: '\([a-z_]*\)'.*/\1/p" autoload/simplemarkdown.vim \
+		| sort -u > "$$tmp/declared"; \
+	grep -ho "Setting('[a-z_]*')" \
 		autoload/simplemarkdown.vim autoload/simplemarkdown/external.vim plugin/simplemarkdown.vim \
-		| sed "s/^Setting('//; s/')$$//" | sort -u > /tmp/simplemarkdown-settings-used
-	@test -s /tmp/simplemarkdown-settings-declared \
-		|| { echo "no settings table found in autoload/simplemarkdown.vim"; exit 1; }
-	@test -s /tmp/simplemarkdown-settings-used \
-		|| { echo "nothing reads a setting; the grep above has gone stale"; exit 1; }
-	@unknown="$$(comm -13 /tmp/simplemarkdown-settings-declared /tmp/simplemarkdown-settings-used)"; \
+		| sed "s/^Setting('//; s/')$$//" | sort -u > "$$tmp/used"; \
+	test -s "$$tmp/declared" \
+		|| { echo "no settings table found in autoload/simplemarkdown.vim"; exit 1; }; \
+	test -s "$$tmp/used" \
+		|| { echo "nothing reads a setting; the grep above has gone stale"; exit 1; }; \
+	unknown="$$(comm -13 "$$tmp/declared" "$$tmp/used")"; \
 	test -z "$$unknown" \
-		|| { echo "Setting() asks for names the table does not declare: $$unknown"; exit 1; }
-	@echo "settings: every name Setting() is asked for is in the table"
+		|| { echo "Setting() asks for names the table does not declare: $$unknown"; exit 1; }; \
+	echo "settings: every name Setting() is asked for is in the table"
 
 test-vim: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_smoke.vim

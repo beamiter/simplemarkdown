@@ -24,11 +24,15 @@ use protocol::{
     Event, HtmlRequest, Line, PROTOCOL_VERSION, PageOptions, Patch, RenderResult, Request,
     ServeRequest, SrcPatch,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::io::Write as StdWrite;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::sync::{Mutex, mpsc};
 
 const USAGE: &str = "\
@@ -141,19 +145,50 @@ const MAX_SESSIONS: usize = 32;
 /// the render it cancels, but a cancel that loses the race against its own
 /// reply has nothing left to remove it — and a long typing session cancels a
 /// render per keystroke burst, so those strays are a slow leak.
-const MAX_CANCELLED: u64 = 256;
+const MAX_CANCELLED: usize = 256;
 
-/// Remember that render `id` has been withdrawn, forgetting ids far enough
-/// behind it to be unreachable.  Request ids only ever increase, so an id more
-/// than a window behind the newest cancel is one whose render either ran long
-/// ago or never will.  Forgetting one costs at worst a superseded render the
-/// client then discards; remembering it for ever costs memory that is never
-/// released.
-fn note_cancelled(cancelled: &mut HashSet<u64>, id: u64) {
-    cancelled.insert(id);
-    if cancelled.len() as u64 > MAX_CANCELLED {
-        let floor = id.saturating_sub(MAX_CANCELLED);
-        cancelled.retain(|pending| *pending >= floor);
+#[derive(Default)]
+struct CancelledRequests {
+    ids: HashSet<u64>,
+    order: VecDeque<u64>,
+}
+
+impl CancelledRequests {
+    fn remove(&mut self, id: &u64) -> bool {
+        if !self.ids.remove(id) {
+            return false;
+        }
+        // The table is deliberately tiny. Keeping the order queue exact avoids
+        // a stale occurrence evicting a newly reused id later.
+        self.order.retain(|pending| pending != id);
+        true
+    }
+
+    #[cfg(test)]
+    fn contains(&self, id: &u64) -> bool {
+        self.ids.contains(id)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+}
+
+/// Remember that render `id` has been withdrawn, retaining the most recently
+/// received cancellations. The editor emits increasing ids, but the wire is a
+/// public protocol: a reconnecting or malformed client can send them out of
+/// order, and that must not defeat the memory bound.
+fn note_cancelled(cancelled: &mut CancelledRequests, id: u64) {
+    if cancelled.ids.insert(id) {
+        cancelled.order.push_back(id);
+    }
+    while cancelled.ids.len() > MAX_CANCELLED {
+        if let Some(oldest) = cancelled.order.pop_front() {
+            cancelled.ids.remove(&oldest);
+        } else {
+            break;
+        }
     }
 }
 
@@ -210,7 +245,7 @@ fn next_epoch() -> u64 {
 const MAX_PREVIEWS: usize = 16;
 
 type Sessions = Arc<Mutex<HashMap<String, Session>>>;
-type Cancelled = Arc<Mutex<HashSet<u64>>>;
+type Cancelled = Arc<Mutex<CancelledRequests>>;
 type Previews = Arc<Mutex<HashMap<String, Preview>>>;
 
 /// One outline request, from the spawn to the reply — or to neither, if the
@@ -227,7 +262,26 @@ type Previews = Arc<Mutex<HashMap<String, Preview>>>;
 /// A function rather than the block it used to be so that the second check can
 /// be held by a test: a cancel timed to land mid-parse over a channel nobody
 /// has to read from a pipe.
-async fn walk_outline(id: u64, lines: Vec<String>, cancelled: Cancelled, tx: mpsc::Sender<String>) {
+#[derive(Clone)]
+struct EventTx {
+    sender: mpsc::Sender<String>,
+    stalled: Arc<AtomicBool>,
+}
+
+impl EventTx {
+    fn new(sender: mpsc::Sender<String>) -> Self {
+        Self {
+            sender,
+            stalled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn is_stalled(&self) -> bool {
+        self.stalled.load(Ordering::Acquire)
+    }
+}
+
+async fn walk_outline(id: u64, lines: Vec<String>, cancelled: Cancelled, tx: EventTx) {
     if cancelled.lock().await.remove(&id) {
         return;
     }
@@ -451,19 +505,95 @@ fn run_daemon() -> std::process::ExitCode {
     }
 }
 
+/// Render requests carry the document in one JSONL record. Keep the limit high
+/// enough for a genuinely large Markdown file, but finite so a broken client
+/// cannot grow one unterminated line until the daemon exhausts memory.
+const MAX_REQUEST_LINE_BYTES: usize = 64 * 1024 * 1024;
+
+fn finish_request_line(mut bytes: Vec<u8>, too_long: bool, limit: usize) -> Result<String, String> {
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    if too_long || bytes.len() > limit {
+        return Err(format!("request line exceeds {limit} bytes"));
+    }
+    String::from_utf8(bytes).map_err(|_| "request line is not valid UTF-8".to_string())
+}
+
+/// Read one bounded JSONL record and discard the rest of an oversized record
+/// through its newline, so a valid request immediately after it is still read.
+async fn read_request_line<R>(
+    reader: &mut R,
+    limit: usize,
+) -> std::io::Result<Option<Result<String, String>>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    let mut too_long = false;
+
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return if bytes.is_empty() && !too_long {
+                Ok(None)
+            } else {
+                Ok(Some(finish_request_line(bytes, too_long, limit)))
+            };
+        }
+
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let content_len = newline.unwrap_or(available.len());
+        let consumed = newline.map_or(available.len(), |position| position + 1);
+        if !too_long {
+            // Keep one extra byte until the record ends: for CRLF that byte is
+            // the framing CR, not part of the JSON line's documented limit.
+            if bytes.len().saturating_add(content_len) > limit.saturating_add(1) {
+                bytes.clear();
+                too_long = true;
+            } else {
+                bytes.extend_from_slice(&available[..content_len]);
+            }
+        }
+        reader.consume(consumed);
+
+        if newline.is_some() {
+            return Ok(Some(finish_request_line(bytes, too_long, limit)));
+        }
+    }
+}
+
 async fn serve() -> std::io::Result<()> {
-    let (out_tx, out_rx) = mpsc::channel::<String>(256);
-    let writer = tokio::spawn(stdout_writer(out_rx));
+    let (sender, out_rx) = mpsc::channel::<String>(256);
+    let out_tx = EventTx::new(sender);
+    let (writer_done_tx, writer_done_rx) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        stdout_writer(out_rx);
+        let _ = writer_done_tx.send(());
+    });
 
     // Requests the editor has withdrawn.  Checked twice — when the render is
     // picked up and again when it finishes — because a document large enough
     // to be worth cancelling is also large enough to be cancelled mid-flight.
-    let cancelled: Cancelled = Arc::new(Mutex::new(HashSet::new()));
+    let cancelled: Cancelled = Arc::new(Mutex::new(CancelledRequests::default()));
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
     let previews: Previews = Arc::new(Mutex::new(HashMap::new()));
 
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines.next_line().await? {
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    loop {
+        if out_tx.is_stalled() {
+            break;
+        }
+        let Some(line) = read_request_line(&mut stdin, MAX_REQUEST_LINE_BYTES).await? else {
+            break;
+        };
+        let line = match line {
+            Ok(line) => line,
+            Err(message) => {
+                send(&out_tx, Event::Error { id: 0, message }).await;
+                continue;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -774,7 +904,12 @@ async fn serve() -> std::io::Result<()> {
     }
 
     drop(out_tx);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), writer).await;
+    if writer_done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .is_ok()
+    {
+        let _ = writer.join();
+    }
     Ok(())
 }
 
@@ -855,7 +990,7 @@ async fn render_page(source: String, opts: html::Options) -> Result<html::Page, 
         .map_err(|error| format!("render failed: {error}"))
 }
 
-async fn serve_start(request: ServeRequest, previews: Previews, tx: mpsc::Sender<String>) {
+async fn serve_start(request: ServeRequest, previews: Previews, tx: EventTx) {
     let id = request.id;
     let session = request.session.clone();
     let (root, name) = document_root(&request.path);
@@ -1023,7 +1158,7 @@ async fn serve_update(session: String, lines: Vec<String>, line: usize, previews
     }
 }
 
-async fn html_once(request: HtmlRequest, tx: mpsc::Sender<String>) {
+async fn html_once(request: HtmlRequest, tx: EventTx) {
     let id = request.id;
     let (root, name) = document_root(&request.path);
     let opts = html_options(&request.page);
@@ -1142,20 +1277,29 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-async fn stdout_writer(mut rx: mpsc::Receiver<String>) {
-    let mut out = tokio::io::stdout();
-    while let Some(line) = rx.recv().await {
-        if out.write_all(line.as_bytes()).await.is_err() || out.write_all(b"\n").await.is_err() {
+fn stdout_writer(mut rx: mpsc::Receiver<String>) {
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    while let Some(line) = rx.blocking_recv() {
+        if out.write_all(line.as_bytes()).is_err() || out.write_all(b"\n").is_err() {
             break;
         }
-        let _ = out.flush().await;
+        let _ = out.flush();
     }
 }
 
-async fn send(tx: &mpsc::Sender<String>, event: Event) {
+async fn send(tx: &EventTx, event: Event) {
+    if tx.is_stalled() {
+        return;
+    }
     match serde_json::to_string(&event) {
         Ok(line) => {
-            let _ = tx.send(line).await;
+            match tokio::time::timeout(std::time::Duration::from_secs(2), tx.sender.send(line))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => tx.stalled.store(true, Ordering::Release),
+            }
         }
         // Serialisation cannot fail for these types, but a silent drop here
         // would look exactly like a hung daemon from Vim's side.
@@ -1375,6 +1519,37 @@ fn self_test() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bounded_request_reader_recovers_at_the_next_record() {
+        let input = b"0123456789\n{\"type\":\"ping\",\"id\":7}\r\n";
+        let mut reader = BufReader::new(&input[..]);
+
+        let oversized = read_request_line(&mut reader, 8)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(oversized, "request line exceeds 8 bytes");
+
+        let next = read_request_line(&mut reader, 64)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(next, r#"{"type":"ping","id":7}"#);
+        assert!(read_request_line(&mut reader, 64).await.unwrap().is_none());
+
+        let mut exact_crlf = BufReader::new(&b"12345678\r\n"[..]);
+        assert_eq!(
+            read_request_line(&mut exact_crlf, 8)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            "12345678"
+        );
+    }
 
     /// Every length modulo three, against the alphabet and the padding rules —
     /// this is written out here rather than depended on, so it is held here too.
@@ -1625,12 +1800,12 @@ mod tests {
         // A cancel that loses the race against its own reply is never removed
         // by the render it names, and a typing session issues one per keystroke
         // burst: unbounded, this is a leak for the life of the daemon.
-        let mut cancelled = HashSet::new();
+        let mut cancelled = CancelledRequests::default();
         for id in 1..=10_000u64 {
             note_cancelled(&mut cancelled, id);
         }
         assert!(
-            cancelled.len() as u64 <= MAX_CANCELLED + 1,
+            cancelled.len() <= MAX_CANCELLED,
             "{} ids remembered",
             cancelled.len()
         );
@@ -1639,6 +1814,18 @@ mod tests {
         assert!(cancelled.contains(&10_000));
         assert!(cancelled.contains(&9_999));
         assert!(!cancelled.contains(&1));
+
+        // The bound must describe insertion count, not numeric ordering. An
+        // out-of-order protocol peer used to make `id - MAX_CANCELLED` point
+        // backwards and retain the whole table forever.
+        let mut descending = CancelledRequests::default();
+        for id in (1..=10_000u64).rev() {
+            note_cancelled(&mut descending, id);
+        }
+        assert_eq!(descending.len(), MAX_CANCELLED);
+        assert!(descending.contains(&1));
+        assert!(descending.contains(&2));
+        assert!(!descending.contains(&10_000));
     }
 
     // The two checks in `walk_outline` are not the same check twice.  The
@@ -1649,13 +1836,13 @@ mod tests {
     // can be timed against.
     #[tokio::test]
     async fn an_outline_withdrawn_while_it_parses_is_never_answered() {
-        let cancelled: Cancelled = Arc::new(Mutex::new(HashSet::new()));
+        let cancelled: Cancelled = Arc::new(Mutex::new(CancelledRequests::default()));
         let (tx, mut rx) = mpsc::channel::<String>(8);
         // Big enough that the parse is still running when the cancel lands: a
         // document this size takes hundreds of milliseconds to walk, against
         // the 50ms below, and the margin only grows on a slower machine.
         let lines: Vec<String> = (0..500_000).map(|n| format!("# heading {n}")).collect();
-        let walking = tokio::spawn(walk_outline(7, lines, cancelled.clone(), tx));
+        let walking = tokio::spawn(walk_outline(7, lines, cancelled.clone(), EventTx::new(tx)));
 
         // By now the first check has certainly run — it is a lock acquired
         // microseconds after the spawn — so this is the second one or nothing.

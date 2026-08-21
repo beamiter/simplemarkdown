@@ -329,6 +329,10 @@ The daemon is usable on its own:
 echo '{"type":"ping","id":1}' | ./target/release/simplemarkdown-daemon
 ```
 
+The editor protocol accepts one UTF-8 JSON object per line. A request line is
+limited to 64 MiB (the document is carried in that record); an oversized line
+is rejected without losing the next request.
+
 ## Part of the simple\* suite
 
 `simplemarkdown` shares its daemon supervisor with
