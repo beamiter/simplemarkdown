@@ -161,6 +161,25 @@ let s:pbuf = winbufnr(s:PreviewWin())
 call assert_false(getbufvar(s:pbuf, '&modifiable'), 'the preview is not modifiable')
 call assert_equal('nofile', getbufvar(s:pbuf, '&buftype'))
 
+" ------------------------------------------------------- the global key ---
+
+" The one key this plugin claims outside the preview window, and it is two
+" characters deep under <leader>m on purpose.  simpleminimap's default lives
+" under the same letter, and while that default was a bare <leader>m it was a
+" strict prefix of this one: Vim cannot dispatch a mapping that another mapping
+" extends until 'timeoutlen' has passed, so the minimap answered a third of a
+" second late and anything typed inside that window went to <leader>md or
+" nowhere at all.  Neither plugin's maparg() guard can see that -- it matches a
+" sequence exactly, so maparg('<leader>m') is empty while <leader>md exists and
+" the reverse -- so the fix was to leave neither a prefix of the other
+" (simpleminimap now takes <leader>mm), not to guard harder.  Shortening this
+" side back to <leader>m is what would undo it, so it is asserted here rather
+" than left to a comment.
+call assert_equal('<Plug>(simplemarkdown-toggle)', maparg('<leader>md', 'n'),
+      \ 'the default global mapping is <leader>md')
+call assert_equal('', maparg('<leader>m', 'n'),
+      \ '<leader>m is left free: a bare <leader>m would be a strict prefix of <leader>md')
+
 " ----------------------------------------------------------- task toggling ---
 
 " ---------------------------------------------------------- preview keys ---
