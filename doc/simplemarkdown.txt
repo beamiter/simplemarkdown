@@ -925,29 +925,41 @@ The page the browser is served already carries the document, so the stream is
 told which one it is holding and opens by sending nothing rather than a copy of
 what is already on screen.
 
-A document containing a raw HTML block is pushed whole, every time.  Raw HTML
-goes out untouched — that is what makes it raw — so it can open a tag it closes
-three blocks later, and the page's blocks then stop corresponding to its own
-elements.  Nothing breaks; it is simply the cost of a document that mixes the
-two, and it is why a `<div>` around a badge in a README makes the preview of
-*that* file heavier than the preview of an ordinary one.
+Raw HTML blocks and inline HTML are displayed as escaped source, not executed.
+Documents containing raw HTML blocks retain conservative whole-page updates.
+
+                                                 *simplemarkdown-browser-safety*
+Browser preview treats Markdown as untrusted content. Raw HTML, event handlers,
+iframes and SVG markup cannot introduce active elements. Links permit relative
+paths and http, https and mailto schemes; other explicit schemes are disabled.
+A hash-based Content Security Policy permits the preview's own scripts, blocks
+inline event handlers, frames, objects and form submissions, and disables the
+referrer header. The same policy is included in static exports.
+
+There is no arbitrary trusted-HTML bypass. Use ordinary Markdown instead of raw
+HTML badges, layout or embedded widgets. Explicitly enabled math engines are
+trusted external code; only their configured script URL is permitted. MathJax
+features requiring extra dynamically loaded scripts may not work. External
+images and math resources can still contact their providers. This is not an
+anonymity boundary or a guarantee against browser vulnerabilities.
 
                                                  *simplemarkdown-external-sync*
 The cursor and the page are tied together the same way the two Vim windows are:
 moving in the source scrolls the page to the matching block and washes it for a
 moment.  |g:simplemarkdown_browser_sync_back| ties the other direction too.
 
-Images and other files referenced relatively are served from the document's
-directory, and from |g:simplemarkdown_browser_root| when that is set; a path
-that leaves both is refused, lexically and again after the symlinks have been
-resolved, which matters because |g:simplemarkdown_browser_host| can be told to
-bind a wildcard address.
+Only supported passive assets (PNG, JPEG, GIF, WebP, AVIF, ICO, MP4, WebM,
+WOFF, WOFF2 and TTF) are served from the document directory and configured
+|g:simplemarkdown_browser_root|. Hidden paths, source/config files, HTML, SVG
+and JavaScript are not served. Paths leaving the root, including symlink
+escapes or aliases to disallowed files, are refused. Responses use nosniff.
+This is not access control: anyone who can reach the preview can read its
+rendered document and allowed assets. Keep the default loopback binding unless
+you explicitly intend to share them; wildcard binding exposes them to others.
 
-|:SimpleMarkdownExternalStatic| has no directory to serve from, so it carries
-the pictures instead: every image under the document's directory goes into the
-file as a `data:` URI.  One that is very large, or that lives outside that
-directory, stays a relative link and will not resolve — a page cannot be more
-self-contained than the files it is allowed to read.
+|:SimpleMarkdownExternalStatic| embeds supported images within the document
+root as data URIs. The same path, symlink and asset restrictions apply. Oversize,
+missing or disallowed images remain links rather than being read into exports.
 
 |:SimpleMarkdownHealth| reports whether the daemon can serve and lists every URL
 currently being served.

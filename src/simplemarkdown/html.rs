@@ -15,14 +15,10 @@
 //! and `pulldown_cmark::html` went with it; the escaping below is this module's
 //! own.
 //!
-//! *No sanitising.*  Escaping and sanitising are not the same job.  A raw HTML
-//! block in the source is passed through verbatim, exactly as the terminal
-//! renderer shows it verbatim, because the document is the user's own file and
-//! a preview that rewrote it would be showing something the file does not say.
-//! The one thing that is refused is a `javascript:` link target, which is not a
-//! security boundary — the raw HTML beside it could do anything — but is the
-//! one place where a plain Markdown link, in a document the user may have
-//! merely downloaded, can turn a click into code.
+//! *No executable document HTML.* Raw HTML is displayed as escaped source,
+//! not inserted into the preview DOM. The same renderer handles initial pages
+//! and live updates. Only the bundled preview scripts (and an explicitly
+//! configured maths engine) are allowed by the page's hash-based CSP.
 //!
 //! *No network.*  [`document`] inlines the stylesheet and the script, so the
 //! page is a single response that works on a train and behind a firewall.  The
@@ -34,6 +30,7 @@ use crate::highlight;
 use crate::render::slug;
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Parser, Tag};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -213,9 +210,8 @@ pub fn render(source: &str, opts: &Options) -> Page {
     }
 
     // Every block has to be exactly one element for the page to be able to
-    // splice by child index.  Raw HTML is not: it goes out untouched, so it can
-    // be two elements, or half of one.  Bare inline at the top level is not an
-    // element at all.
+    // splice by child index. Raw HTML is escaped, but retains the conservative
+    // whole-page update path. Bare inline at the top level is not an element.
     let splittable = !emitter.raw_html
         && blocks
             .iter()
@@ -262,7 +258,7 @@ struct Emitter<'a> {
     /// same way in the browser and in the terminal.
     anchors: HashMap<String, usize>,
     notes: Vec<Note>,
-    /// Set when a raw HTML block has gone out verbatim; see [`Page::splittable`].
+    /// Set when a raw HTML block was escaped; see [`Page::splittable`].
     raw_html: bool,
 }
 
@@ -400,13 +396,14 @@ impl Emitter<'_> {
                 *i += 1;
                 let raw = raw_text(ev, i);
                 *i += 1;
-                // Verbatim, and unwrapped: see the module comment.  It also
-                // means the block carries no `data-line`, which costs it a
-                // scroll-sync anchor and is the honest price of not touching it
-                // — and it is why the document as a whole stops being pushed to
-                // the browser a block at a time; see [`Page::splittable`].
+                // Keep whole-page updates for raw blocks for compatibility,
+                // but never give source markup to the browser's HTML parser.
                 self.raw_html = true;
-                self.out.push_str(&raw);
+                push!(
+                    self.out,
+                    "<pre class=\"sm-raw-html\" data-line=\"{line}\">{}</pre>\n",
+                    escape_text(&raw)
+                );
             }
             Event::Start(Tag::MetadataBlock(_)) => {
                 *i += 1;
@@ -712,7 +709,7 @@ impl Emitter<'_> {
                     *i += 1;
                 }
                 Event::Html(text) | Event::InlineHtml(text) => {
-                    self.out.push_str(text);
+                    self.out.push_str(&escape_text(text));
                     *i += 1;
                 }
                 Event::SoftBreak => {
@@ -932,6 +929,9 @@ pub fn document(page: &Page, opts: &PageOptions, seq: u64) -> String {
         .unwrap_or_else(|_| String::from("{}"))
         .replace('<', "\\u003c");
 
+    let config_script = format!("window.SM = {config};");
+    let preview_script = format!("\n{js}\n");
+    let csp = content_security_policy(&config_script, &preview_script, opts);
     let mut out = String::with_capacity(css.len() + js.len() + page.body.len() + 4096);
     push!(
         out,
@@ -939,6 +939,12 @@ pub fn document(page: &Page, opts: &PageOptions, seq: u64) -> String {
         escape_attr(&opts.theme)
     );
     out.push_str("<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
+    push!(
+        out,
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"{}\">\n",
+        escape_attr(&csp)
+    );
+    out.push_str("<meta name=\"referrer\" content=\"no-referrer\">\n");
     push!(out, "<title>{}</title>\n", escape_text(title));
     push!(out, "<style>\n{css}\n</style>\n");
     out.push_str(&math_head(opts));
@@ -950,10 +956,25 @@ pub fn document(page: &Page, opts: &PageOptions, seq: u64) -> String {
     out.push_str(&page.body);
     out.push_str("</article></main>\n");
     out.push_str(BAR);
-    push!(out, "<script>window.SM = {config};</script>\n");
-    push!(out, "<script>\n{js}\n</script>\n");
+    push!(out, "<script>{config_script}</script>\n");
+    push!(out, "<script>{preview_script}</script>\n");
     out.push_str("</body>\n</html>\n");
     out
+}
+
+/// Authorise only scripts owned by the preview, never inline document code.
+/// Styles remain inline for highlighting, column sizing and the maths engine.
+fn content_security_policy(config: &str, preview: &str, opts: &PageOptions) -> String {
+    let hash = |text: &str| crate::base64(&Sha256::digest(text.as_bytes()));
+    let math = math_src(opts)
+        .map(|src| format!(" {src}"))
+        .unwrap_or_default();
+    format!(
+        "default-src 'none'; script-src 'sha256-{}' 'sha256-{}'{}; script-src-attr 'none'; style-src 'unsafe-inline' https: http:; img-src 'self' data: https: http:; font-src 'self' https: http:; media-src 'self'; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'",
+        hash(config),
+        hash(preview),
+        math
+    )
 }
 
 /// `window.SM`.  Built through serde rather than by hand so a document title
@@ -982,11 +1003,18 @@ fn math_src(opts: &PageOptions) -> Option<String> {
         "mathjax" => MATHJAX_JS,
         _ => return None,
     };
-    Some(if opts.math_url.is_empty() {
+    let src = if opts.math_url.is_empty() {
         default.to_string()
     } else {
         opts.math_url.clone()
-    })
+    };
+    // Configuration is explicit user input, but must not inject a CSP token or
+    // an active URL scheme. Do not silently turn a malformed URL into trust.
+    ((src.starts_with("https://") || src.starts_with("http://"))
+        && !src
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | ';' | '<' | '>' | '`')))
+    .then_some(src)
 }
 
 /// The one remote resource the page is allowed to name.  It is `defer`red, so a
@@ -1004,16 +1032,11 @@ fn math_head(opts: &PageOptions) -> String {
             Some(stem) => format!("{stem}.css"),
             None => KATEX_CSS.to_string(),
         };
-        // `media="print"` until it has loaded, which is the standard way to
-        // fetch a stylesheet without blocking the first paint.  A plain
-        // stylesheet link in the head is render-blocking: with the CDN slow or
-        // unreachable — and this is the one resource on the page that is not
-        // served from this machine — the reader would sit in front of a blank
-        // tab until the request gave up, waiting on the typesetting of formulas
-        // the document may not even contain.
+        // A normal stylesheet avoids an inline onload handler, which CSP
+        // deliberately forbids. Maths is opt-in; offline pages remain readable.
         push!(
             head,
-            "<link rel=\"stylesheet\" href=\"{}\" media=\"print\" onload=\"this.media='all'\">\n",
+            "<link rel=\"stylesheet\" href=\"{}\">\n",
             escape_attr(&css)
         );
     }
@@ -1081,7 +1104,7 @@ fn escape_attr(text: &str) -> Cow<'_, str> {
 /// ignores tabs and newlines inside a URL and `java&#10;script:` would be a
 /// scheme test passed and a script run; testing the cleaned string and then
 /// emitting the original would be the same bug with extra steps.  And a
-/// `javascript:` target is rewritten to `#`, because the preview renders
+/// target outside http/https/mailto is rewritten to `#`, because the preview renders
 /// documents its reader did not necessarily write, and a link is the one thing
 /// in a Markdown file a reader is invited to click.  Escaping the `&` on the
 /// way out is what stops an entity from re-forming the scheme in the browser's
@@ -1097,7 +1120,7 @@ fn escape_href(url: &str) -> String {
                 .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
             && matches!(
                 scheme.to_ascii_lowercase().as_str(),
-                "javascript" | "vbscript"
+                scheme if !matches!(scheme, "http" | "https" | "mailto")
             )
         {
             return String::from("#");
@@ -1482,10 +1505,71 @@ mod tests {
     }
 
     #[test]
-    fn raw_html_passes_through_untouched() {
+    fn document_markup_cannot_create_active_elements() {
+        for source in [
+            "<script>window.pwned=1</script>",
+            "text <img src=x onerror=alert(1)>",
+            "<svg onload=alert(1)><a href='javascript:alert(1)'>x</a></svg>",
+            "<iframe srcdoc='<script>alert(1)</script>'></iframe>",
+            "<base href='https://evil.invalid/'>",
+            "<meta http-equiv='refresh' content='0;url=https://evil.invalid/'>",
+        ] {
+            let out = body(source);
+            for active in ["<script", "<img", "<svg", "<iframe", "<base", "<meta"] {
+                assert!(!out.contains(active), "{source}: {out}");
+            }
+            assert!(out.contains("&lt;"), "{out}");
+        }
+        for target in [
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "file:///etc/passwd",
+            "vbscript:x",
+        ] {
+            assert_eq!(escape_href(target), "#");
+        }
+    }
+
+    #[test]
+    fn csp_hashes_match_exact_script_bytes_and_reject_config_injection() {
+        let page = render(
+            "# </script><img src=x onerror=alert(1)>",
+            &Options::default(),
+        );
+        let out = document(&page, &PageOptions::default(), 0);
+        assert!(out.contains("Content-Security-Policy"));
+        assert!(out.contains("script-src-attr &#39;none&#39;"));
+        assert!(out.contains("base-uri &#39;none&#39;"));
+        let mut rest = out.as_str();
+        while let Some((_, after)) = rest.split_once("<script>") {
+            let (script, remaining) = after.split_once("</script>").unwrap();
+            rest = remaining;
+            let digest = crate::base64(&Sha256::digest(script.as_bytes()));
+            assert!(out.contains(&format!("&#39;sha256-{digest}&#39;")));
+        }
+        for url in [
+            "javascript:alert(1)",
+            "https://example.test/; script-src *",
+            "https://example.test/\nfoo",
+        ] {
+            let options = PageOptions {
+                math: "katex".into(),
+                math_url: url.into(),
+                ..PageOptions::default()
+            };
+            assert!(math_src(&options).is_none());
+            assert!(math_head(&options).is_empty());
+        }
+    }
+
+    #[test]
+    fn raw_html_is_displayed_as_source() {
         let out = body("<div class=\"mine\">kept</div>\n\ntext with <b>tags</b>\n");
-        assert!(out.contains("<div class=\"mine\">kept</div>"), "{out}");
-        assert!(out.contains("with <b>tags</b>"), "{out}");
+        assert!(
+            out.contains("&lt;div class=\"mine\"&gt;kept&lt;/div&gt;"),
+            "{out}"
+        );
+        assert!(out.contains("with &lt;b&gt;tags&lt;/b&gt;"), "{out}");
     }
 
     #[test]

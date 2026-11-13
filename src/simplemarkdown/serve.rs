@@ -861,7 +861,10 @@ async fn asset(stream: &mut TcpStream, state: &State, path: &str) -> io::Result<
             // next to the document may point at `~/.ssh/id_rsa`, and this
             // server may be bound to an address the rest of the office can
             // reach.
-            if real.starts_with(root) {
+            if real.starts_with(root)
+                && passive_asset(&candidate, root)
+                && passive_asset(&real, root)
+            {
                 found = Some(real);
                 break;
             }
@@ -883,6 +886,40 @@ async fn asset(stream: &mut TcpStream, state: &State, path: &str) -> io::Result<
         // reporting what does and does not exist on the disk behind it.
         _ => respond_text(stream, NOT_FOUND, "not found").await,
     }
+}
+
+/// The preview is not a general file server. Never expose source/configuration
+/// files or active formats (HTML/SVG/JS), including via a misleading symlink.
+pub(crate) fn passive_asset(path: &Path, root: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    if relative
+        .components()
+        .any(|p| p.as_os_str().to_string_lossy().starts_with('.'))
+    {
+        return false;
+    }
+    matches!(
+        path.extension()
+            .and_then(|x| x.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "webp"
+                | "avif"
+                | "ico"
+                | "mp4"
+                | "webm"
+                | "woff"
+                | "woff2"
+                | "ttf"
+        )
+    )
 }
 
 /// The path a URL is allowed to name under `root`, decided lexically.
@@ -1109,6 +1146,9 @@ async fn respond(
          Content-Type: {content_type}\r\n\
          Content-Length: {length}\r\n\
          Cache-Control: no-store\r\n\
+         X-Content-Type-Options: nosniff\r\n\
+         Referrer-Policy: no-referrer\r\n\
+         X-Frame-Options: DENY\r\n\
          Connection: close\r\n\
          \r\n",
         length = body.len()
@@ -1682,6 +1722,64 @@ mod tests {
             assert!(followed.starts_with("HTTP/1.1 404"), "{followed}");
         }
 
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn preview_does_not_serve_active_or_private_files() {
+        let base = std::env::temp_dir().join(format!("sm-safe-assets-{}", std::process::id()));
+        let _fixtures = TempArtifacts(vec![base.clone()]);
+        std::fs::create_dir_all(base.join(".private")).unwrap();
+        for name in [
+            ".env",
+            "config.json",
+            "notes.md",
+            "page.html",
+            "run.js",
+            "vector.svg",
+            ".private/photo.png",
+        ] {
+            std::fs::write(base.join(name), b"sensitive").unwrap();
+        }
+        std::fs::write(base.join("photo.png"), b"image").unwrap();
+        let mut settings = config(false);
+        settings.root = base.clone();
+        let server = Server::start(settings).await.unwrap();
+        for name in [
+            ".env",
+            "%2eenv",
+            "config.json",
+            "notes.md",
+            "page.html",
+            "run.js",
+            "vector.svg",
+            ".private/photo.png",
+        ] {
+            let reply = ask(
+                server.port(),
+                &format!("GET /{name} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            )
+            .await;
+            assert!(reply.starts_with("HTTP/1.1 404"), "{name}: {reply}");
+            assert!(!reply.contains("sensitive"));
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join(".env"), base.join("alias.png")).unwrap();
+            let reply = ask(
+                server.port(),
+                "GET /alias.png HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            .await;
+            assert!(reply.starts_with("HTTP/1.1 404"));
+        }
+        let reply = ask(
+            server.port(),
+            "GET /photo.png HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(reply.starts_with("HTTP/1.1 200"));
+        assert!(reply.contains("X-Content-Type-Options: nosniff"));
         server.stop();
     }
 

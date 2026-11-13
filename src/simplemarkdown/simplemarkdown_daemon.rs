@@ -1239,6 +1239,15 @@ fn inline_one(root: &Path, value: &str, budget: &mut usize) -> Option<String> {
     }
     let target = format!("/{relative}");
     let path = serve::safe_join(root, &target)?;
+    let real_root = root.canonicalize().ok()?;
+    let real = path.canonicalize().ok()?;
+    if !serve::passive_asset(&path, root)
+        || !real.starts_with(&real_root)
+        || !serve::passive_asset(&real, &real_root)
+    {
+        return None;
+    }
+    let path = real;
     let size = std::fs::metadata(&path).ok()?.len();
     if size > INLINE_MAX_FILE || size as usize > *budget {
         return None;
@@ -1596,6 +1605,31 @@ mod tests {
         assert!(out.contains("src=\"missing.png\""), "{out}");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn static_export_refuses_private_active_and_symlink_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "simplemarkdown-inline-security-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut budget = usize::MAX;
+        for file in [".env", "config.json", "active.svg", "page.html"] {
+            std::fs::write(root.join(file), b"PRIVATE_CONTENT").unwrap();
+            assert!(inline_one(&root, file, &mut budget).is_none(), "{file}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join(".env"), root.join("alias.png")).unwrap();
+            assert!(inline_one(&root, "alias.png", &mut budget).is_none());
+            let outside = root.with_extension("png");
+            std::fs::write(&outside, b"OUTSIDE_CONTENT").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("outside.png")).unwrap();
+            assert!(inline_one(&root, "outside.png", &mut budget).is_none());
+            std::fs::remove_file(outside).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// The editor's name for the document wins over the one the path implies,

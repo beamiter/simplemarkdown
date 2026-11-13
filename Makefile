@@ -6,6 +6,12 @@ build:
 install:
 	./install.sh
 
+# Optional real-browser security gate; install Playwright and Chromium first.
+.PHONY: test-browser-security
+test-browser-security:
+	cargo build --locked
+	python3 tests/security/browser_preview.py
+
 fmt:
 	cargo fmt --all -- --check
 
