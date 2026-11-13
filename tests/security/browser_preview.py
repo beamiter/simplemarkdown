@@ -52,7 +52,7 @@ def main():
                 page.wait_for_function('window.SM && document.querySelector("#sm-theme").title.startsWith("Theme:")')
                 assert page.locator('#sm-doc script, #sm-doc iframe, #sm-doc svg, #sm-doc [onerror], #sm-doc [onclick]').count()==0
                 assert page.evaluate('window.pwned === undefined && window.leak === undefined')
-                assert page.locator('#sm-doc a').get_attribute('href')=='#'
+                assert page.get_by_role('link', name='bad', exact=True).get_attribute('href')=='#'
                 page.wait_for_function('document.querySelector("#sm-doc img").naturalWidth === 1')
                 before=page.locator('html').get_attribute('data-theme')
                 page.locator('#sm-theme').click()
