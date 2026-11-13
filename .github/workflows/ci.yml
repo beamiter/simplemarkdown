@@ -54,7 +54,8 @@ jobs:
         run: make check
 
   browser-security:
-    runs-on: ubuntu-latest
+    # Pin the OS alongside Playwright so ubuntu-latest upgrades cannot break installation.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
