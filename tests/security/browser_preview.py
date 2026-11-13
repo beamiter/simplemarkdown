@@ -7,7 +7,7 @@ import pathlib
 import select
 import subprocess
 import tempfile
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 
 def main():
@@ -39,7 +39,7 @@ def main():
             'Inline <b onclick="window.pwned=true">text</b>',
         ]
         try:
-            send({'type':'serve','id':1,'session':'security','path':str(root/'README.md'),'lines':hostile,'port':0})
+            send({'type':'serve','id':1,'session':'security','path':str(root/'README.md'),'lines':hostile,'port':0,'page':{'math':'off'}})
             reply=response()
             assert reply['type']=='serve_result', reply
             url=reply['url']
@@ -67,7 +67,7 @@ def main():
                 assert page.evaluate('window.injected === undefined')
                 # SSE is still functional and uses exactly the same escaping policy.
                 send({'type':'serve_update','session':'security','lines':['# Updated','','<img src=x onerror="window.pwned=true">']})
-                page.wait_for_function('document.querySelector("#sm-doc").textContent.includes("Updated")')
+                expect(page.locator('#sm-doc')).to_contain_text('Updated')
                 assert page.locator('#sm-doc [onerror]').count()==0
                 assert page.evaluate('window.pwned === undefined')
                 assert not dialogs,dialogs
