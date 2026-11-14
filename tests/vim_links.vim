@@ -319,6 +319,20 @@ execute 'bwipeout! ' .. bufnr('remote:///srv/top.md')
 call win_gotoid(s:remote_win)
 bwipeout!
 
+" Source-only/cross-file navigation must reserve generated IDs like the daemon.
+enew!
+call setline(1, ['# Notes', '# Notes', '# Notes-1', '# Notes'])
+call simplemarkdown#JumpToAnchor('notes-1-1')
+call assert_equal(3, line('.'), 'literal suffix heading collided with generated ID')
+call simplemarkdown#JumpToAnchor('notes-2')
+call assert_equal(4, line('.'), 'later repeat lost its unique anchor')
+call setline(1, ['# Notes-1', '# Notes', '# Notes', '# Notes-1'])
+call simplemarkdown#JumpToAnchor('notes-2')
+call assert_equal(3, line('.'), 'generated suffix did not skip an occupied ID')
+call simplemarkdown#JumpToAnchor('notes-1-1')
+call assert_equal(4, line('.'), 'repeated literal suffix did not receive a unique ID')
+bwipeout!
+
 " ----------------------------------------------------------------- teardown ---
 
 call simplemarkdown#Stop()

@@ -14,7 +14,7 @@
 //! be answered one heading at a time.  It is also exactly a fold range.
 
 use crate::protocol::OutlineEntry;
-use crate::render::slug;
+use crate::render::unique_anchor;
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use std::collections::HashMap;
 
@@ -55,14 +55,7 @@ pub fn outline(lines: &[String]) -> Vec<OutlineEntry> {
                     continue;
                 };
                 let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                let base = slug(&text);
-                let count = seen.entry(base.clone()).or_insert(0);
-                *count += 1;
-                let anchor = if *count == 1 {
-                    base
-                } else {
-                    format!("{base}-{}", *count - 1)
-                };
+                let anchor = unique_anchor(&mut seen, &text);
                 entries.push(OutlineEntry {
                     level,
                     text,
@@ -106,6 +99,41 @@ mod tests {
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn generated_heading_suffixes_do_not_collide_with_literal_headings() {
+        for (source, expected) in [
+            (
+                "# Notes\n# Notes\n# Notes-1\n# Notes\n",
+                vec!["notes", "notes-1", "notes-1-1", "notes-2"],
+            ),
+            (
+                "# Notes-1\n# Notes\n# Notes\n# Notes-1\n",
+                vec!["notes-1", "notes", "notes-2", "notes-1-1"],
+            ),
+            (
+                "# Notes\n# Notes-1\n# Notes-1-1\n# Notes\n# Notes-1\n",
+                vec!["notes", "notes-1", "notes-1-1", "notes-2", "notes-1-2"],
+            ),
+        ] {
+            let entries = outline(&lines(source));
+            let anchors: Vec<_> = entries.iter().map(|entry| entry.anchor.as_str()).collect();
+            assert_eq!(anchors, expected);
+            let page = crate::html::render(source, &crate::html::Options::default());
+            let html: Vec<_> = page.toc.iter().map(|entry| entry.anchor.as_str()).collect();
+            assert_eq!(html, expected);
+            for anchor in &expected {
+                assert_eq!(page.body.matches(&format!("id=\"{anchor}\"")).count(), 1);
+            }
+            let preview = crate::render::render(source, 60, &crate::protocol::Options::default());
+            let terminal: Vec<_> = preview
+                .toc
+                .iter()
+                .map(|entry| entry.anchor.as_str())
+                .collect();
+            assert_eq!(terminal, expected);
+        }
     }
 
     /// The outline, the terminal preview and the browser preview all parse the

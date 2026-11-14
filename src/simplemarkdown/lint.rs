@@ -90,6 +90,7 @@ fn headings(
 ) -> HashSet<String> {
     let mut anchors: HashSet<String> = HashSet::new();
     let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut used: HashMap<String, usize> = HashMap::new();
     let mut previous = 0u8;
     let mut collecting: Option<(u8, Range<usize>, String)> = None;
 
@@ -126,11 +127,7 @@ fn headings(
                 let base = crate::render::slug(&text);
                 let count = seen.entry(base.clone()).or_insert(0);
                 *count += 1;
-                let anchor = if *count == 1 {
-                    base.clone()
-                } else {
-                    format!("{base}-{}", *count - 1)
-                };
+                let anchor = crate::render::unique_anchor(&mut used, &text);
                 if *count == 2 {
                     // Reported once, on the second one: a heading repeated
                     // eight times should not be eight diagnostics.
@@ -388,6 +385,22 @@ mod tests {
         assert_eq!(items[0].line, 3);
         assert_eq!(items[0].col, 5, "the column of the link, not of the line");
         assert!(items[0].text.contains("#nowhere"));
+    }
+
+    #[test]
+    fn suffixed_heading_collisions_use_the_renderers_resolved_anchor() {
+        let items = lint("# Notes\n# Notes-1\n# Notes\n\n[x](#notes-2)\n[y](#notes-3)\n");
+        let broken: Vec<_> = items
+            .iter()
+            .filter(|item| item.code == codes::BROKEN_ANCHOR)
+            .collect();
+        assert_eq!(broken.len(), 1, "{items:?}");
+        assert!(broken[0].text.contains("#notes-3"));
+        let duplicate = items
+            .iter()
+            .find(|item| item.code == codes::DUPLICATE_ANCHOR)
+            .unwrap();
+        assert!(duplicate.text.contains("this one is #notes-2"));
     }
 
     #[test]

@@ -6,6 +6,14 @@ All notable changes to this project are documented here.  The format follows
 
 ## [Unreleased]
 
+### Heading anchor collision fix
+
+- Reserve generated heading IDs as well as literal slugs. Repeated `Notes`
+  headings no longer collide with a literal `Notes-1` heading. Browser and
+  terminal previews, outlines, lint diagnostics and source-only link jumps use
+  the same collision resolution, so TOC links reach the intended section.
+
+
 ### SimpleRemote 远程工作区
 
 全部特性检测:没装 SimpleRemote 时这几条代码一行都到不了,测试也是在 runtimepath

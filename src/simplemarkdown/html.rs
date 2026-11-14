@@ -27,7 +27,7 @@
 
 use crate::classes;
 use crate::highlight;
-use crate::render::slug;
+use crate::render::unique_anchor;
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Parser, Tag};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -252,7 +252,7 @@ struct Emitter<'a> {
     toc: Vec<TocItem>,
     title: String,
     line_starts: Vec<usize>,
-    /// How many headings have already claimed each slug, so the second
+    /// Reserved IDs and suffix counters for every heading, so the second
     /// `## Notes` becomes `notes-1` exactly as it does on GitHub — and exactly
     /// as `outline.rs` numbers it, so a link into the document resolves the
     /// same way in the browser and in the terminal.
@@ -272,14 +272,7 @@ impl Emitter<'_> {
     }
 
     fn unique_anchor(&mut self, text: &str) -> String {
-        let base = slug(text);
-        let seen = self.anchors.entry(base.clone()).or_insert(0);
-        *seen += 1;
-        if *seen == 1 {
-            base
-        } else {
-            format!("{base}-{}", *seen - 1)
-        }
+        unique_anchor(&mut self.anchors, text)
     }
 
     /// Render inline content into a string of its own instead of into the page.

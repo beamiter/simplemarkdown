@@ -412,7 +412,9 @@ A `#anchor`, alone or after a file name, is matched against GitHub's heading
 slug: the heading lower-cased, with everything that is not a letter, digit,
 `_` or `-` removed and each remaining space turned into `-`, so `## Notes:
 part one!` answers to `#notes-part-one`.  A heading repeated in one document
-is numbered as GitHub numbers it, `#notes`, `#notes-1`, `#notes-2`.  A link
+is numbered as GitHub numbers it, `#notes`, `#notes-1`, `#notes-2`.
+Already-used IDs are skipped, including literal numbered headings such as
+`Notes-1`, so generated suffixes cannot collide with another heading. A link
 that matches no slug falls back to matching the heading's words, which is what
 this did before slugs existed.  `other.md#section` opens the file and then
 moves to that section; an anchor that names no heading says so and stays put.

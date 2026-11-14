@@ -2818,10 +2818,16 @@ def HeadingLineForAnchor(buf: number, anchor: string): number
   for [lnum, raw] in HeadingsIn(buf)
     var text = PlainInline(raw)
     var base = Slug(text)
-    # The daemon's de-duplication, repeated here: `#notes-1` is the second
-    # `## Notes`, not a heading that happens to end in `-1`.
-    seen[base] = get(seen, base, 0) + 1
-    var unique = seen[base] == 1 ? base : printf('%s-%d', base, seen[base] - 1)
+    # Reserve generated IDs too, just like the daemon: an explicit Notes-1
+    # heading must not collide with the suffix generated for a repeated Notes.
+    var unique = base
+    while has_key(seen, unique)
+      seen[base] = get(seen, base, 0) + 1
+      unique = printf('%s-%d', base, seen[base])
+    endwhile
+    if !has_key(seen, unique)
+      seen[unique] = 0
+    endif
     if unique ==# wanted
       return lnum
     endif
