@@ -70,6 +70,7 @@ simplemarkdown#Setting()	simplemarkdown.txt	/*simplemarkdown#Setting()*
 simplemarkdown#SettingNames()	simplemarkdown.txt	/*simplemarkdown#SettingNames()*
 simplemarkdown#ValidateConfig()	simplemarkdown.txt	/*simplemarkdown#ValidateConfig()*
 simplemarkdown-architecture	simplemarkdown.txt	/*simplemarkdown-architecture*
+simplemarkdown-browser-safety	simplemarkdown.txt	/*simplemarkdown-browser-safety*
 simplemarkdown-commands	simplemarkdown.txt	/*simplemarkdown-commands*
 simplemarkdown-config-validation	simplemarkdown.txt	/*simplemarkdown-config-validation*
 simplemarkdown-configuration	simplemarkdown.txt	/*simplemarkdown-configuration*
@@ -95,4 +96,3 @@ simplemarkdown-simplecore	simplemarkdown.txt	/*simplemarkdown-simplecore*
 simplemarkdown-troubleshooting	simplemarkdown.txt	/*simplemarkdown-troubleshooting*
 simplemarkdown-usage	simplemarkdown.txt	/*simplemarkdown-usage*
 simplemarkdown.txt	simplemarkdown.txt	/*simplemarkdown.txt*
-that	simplemarkdown.txt	/*that*
