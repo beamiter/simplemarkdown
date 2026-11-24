@@ -673,6 +673,7 @@ def OnDaemonExit(code: number, restarting: bool)
   for key in keys(sessions)
     var session = sessions[key]
     session.pending = false
+    session.input_base = {}
     if !restarting
       Placeholder(key, printf('Backend exited unexpectedly (code %d).', code))
     endif
@@ -1108,6 +1109,7 @@ def Placeholder(key: string, message: string)
   # The buffer now holds a message, not a render; nothing can be spliced into
   # it, and the daemon has to be told to start the session over.
   session.rendered = false
+  session.input_base = {}
 enddef
 
 
@@ -1181,6 +1183,68 @@ def Options(): dict<any>
 enddef
 
 
+# This cache is separate from the rendered-row patch base. Source input can
+# only be spliced against an exact revision the daemon positively acknowledged.
+const SOURCE_CACHE_ENTRIES = 4
+const SOURCE_MAX_LINES = 32768
+const SOURCE_MAX_BYTES = 2 * 1024 * 1024
+const SOURCE_MAX_INSERT_LINES = 256
+const SOURCE_MAX_INSERT_BYTES = 64 * 1024
+
+def BoundedSourceBytes(lines: list<string>, max_lines: number, max_bytes: number): number
+  if len(lines) > max_lines
+    return -1
+  endif
+  var bytes = 0
+  for line in lines
+    bytes += strlen(line) + 1
+    if bytes > max_bytes
+      return -1
+    endif
+  endfor
+  return bytes
+enddef
+
+def SourceDelta(before: list<string>, after: list<string>): dict<any>
+  var first = 0
+  var old_end = len(before)
+  var new_end = len(after)
+  while first < old_end && first < new_end && before[first] ==# after[first]
+    first += 1
+  endwhile
+  while old_end > first && new_end > first && before[old_end - 1] ==# after[new_end - 1]
+    old_end -= 1
+    new_end -= 1
+  endwhile
+  if new_end - first > SOURCE_MAX_INSERT_LINES
+    return {}
+  endif
+  var insert = first == new_end ? [] : after[first : new_end - 1]
+  if BoundedSourceBytes(insert, SOURCE_MAX_INSERT_LINES, SOURCE_MAX_INSERT_BYTES) < 0
+    return {}
+  endif
+  return {from: first, del: old_end - first, insert: insert}
+enddef
+
+def RememberSource(session: dict<any>, source: dict<any>)
+  if empty(get(session, 'input_base', {}))
+    var count = 0
+    var oldest: dict<any> = {}
+    for view in values(sessions)
+      if !empty(get(view, 'input_base', {}))
+        count += 1
+        if empty(oldest) || view.input_base.id < oldest.input_base.id
+          oldest = view
+        endif
+      endif
+    endfor
+    if count >= SOURCE_CACHE_ENTRIES
+      oldest.input_base = {}
+    endif
+  endif
+  session.input_base = source
+enddef
+
 def Render(key: string)
   if !has_key(sessions, key)
     return
@@ -1229,23 +1293,49 @@ def Render(key: string)
   requests[string(id)] = key
   session.pending = true
 
-  var sent = simplemarkdown#core#Request({
+  var wire: dict<any> = {
     type: 'render',
     id: id,
-    lines: lines,
     width: width,
     opts: Options(),
     session: key,
     # Only claim a patch can be applied when this session is actually holding
     # the rows the daemon thinks it sent.
     incremental: session.rendered && Setting('simplemarkdown_incremental') ? true : false,
-  }, (reply) => {
-    OnRenderReply(key, generation, source_bufnr, source_changedtick, reply)
+  }
+  var size = Setting('simplemarkdown_incremental')
+    && simplemarkdown#core#Ready() && simplemarkdown#core#HasCap('render_source_delta')
+    ? BoundedSourceBytes(lines, SOURCE_MAX_LINES, SOURCE_MAX_BYTES) : -1
+  var retain = size >= 0
+  var offered = retain ? {id: id, bufnr: source_bufnr, lines: lines} : {}
+  var input_base = get(session, 'input_base', {})
+  if retain && !empty(input_base) && input_base.bufnr == source_bufnr
+    var delta = SourceDelta(input_base.lines, lines)
+    if !empty(delta)
+      # Do not replace a tiny snapshot with a larger envelope.
+      if strlen(json_encode(delta)) + 32 < size
+        wire->extend(delta)
+        wire.type = 'render_delta'
+        wire.base = input_base.id
+      endif
+    endif
+  endif
+  var delta_sent = wire.type ==# 'render_delta'
+  if !delta_sent
+    wire.lines = lines
+    if retain
+      wire.remember_source = true
+    endif
+  endif
+  var sent = simplemarkdown#core#Request(wire, (reply) => {
+    OnRenderReply(key, generation, source_bufnr, source_changedtick, offered, delta_sent, reply)
   }, RENDER_TIMEOUT_MS)
 
   if sent == 0
     session.pending = false
-    requests->remove(string(id))
+    if has_key(requests, string(id))
+      requests->remove(string(id))
+    endif
   endif
 enddef
 
@@ -1268,6 +1358,7 @@ def Discard(key: string)
   var session = sessions[key]
   session.pending = false
   session.rendered = false
+  session.input_base = {}
   Schedule(key, 0)
 enddef
 
@@ -1277,6 +1368,8 @@ def OnRenderReply(
     generation: number,
     source_bufnr: number,
     source_changedtick: number,
+    offered: dict<any>,
+    delta_sent: bool,
     reply: dict<any>)
   var id = string(get(reply, 'id', 0))
   if has_key(requests, id)
@@ -1302,7 +1395,15 @@ def OnRenderReply(
     Log(printf('discarding render generation %d for stale source tick %d',
       generation, source_changedtick))
     session.rendered = false
+    session.input_base = {}
     Schedule(key, 0)
+    return
+  endif
+
+  if delta_sent && get(reply, 'type', '') ==# 'render_source_missing'
+    # An evicted/restarted base is a cache miss, not a bad document. A
+    # mismatch clears the base before scheduling, so recovery is one full.
+    Discard(key)
     return
   endif
 
@@ -1335,6 +1436,14 @@ def OnRenderReply(
     session.src_map_bufnr = source_bufnr
     session.src_map_changedtick = source_changedtick
     session.src_map_generation = generation
+    var acknowledged: any = get(reply, 'source_rev', -1)
+    if !empty(offered) && type(acknowledged) == v:t_number && acknowledged == offered.id
+      RememberSource(session, offered)
+    else
+      session.input_base = {}
+    endif
+  else
+    session.input_base = {}
   endif
 enddef
 

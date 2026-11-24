@@ -1117,6 +1117,13 @@ paragraph and leaves everything above and below it identical.  A keystroke in a
 five-thousand-row document then moves one row over the wire instead of five
 thousand, and Vim repaints one row's properties instead of all of them.
 
+A daemon advertising `render_source_delta` also accepts a small input splice
+against the exact source revision it acknowledged for that preview. It still
+parses the entire reconstructed document. Edits beyond the splice budget,
+unacknowledged or evicted revisions, and restarts use the full source; an older
+v4 daemon keeps receiving the original full-source requests. The browser,
+outline, lint, and authoring commands do not use this input cache.
+
 Two rows count as the same row when they *look* the same.  The source line a
 row came from is deliberately not part of that comparison: it moves on every
 row below an inserted line while nothing on screen moves at all, and comparing

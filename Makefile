@@ -241,6 +241,7 @@ test-outline: build
 # do not — the preview must explain itself and must not render.
 test-protocol:
 	vim -Nu NONE -n -i NONE -es -S tests/vim_protocol.vim
+	vim -Nu NONE -n -i NONE -es -S tests/vim_source_delta.vim
 
 # The external (browser) preview.  It talks HTTP to the port the plugin was
 # handed rather than believing the plugin's own table: the table is what the

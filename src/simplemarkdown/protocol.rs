@@ -42,6 +42,10 @@ pub enum Request {
     },
     #[serde(rename = "render")]
     Render(Box<RenderRequest>),
+    /// Optional v4 capability. A separate type makes an older implementation
+    /// reject it, rather than render empty lines after ignoring new fields.
+    #[serde(rename = "render_delta")]
+    RenderDelta(Box<RenderDeltaRequest>),
     /// Drop a queued render whose answer nobody is waiting for any more.
     #[serde(rename = "cancel")]
     Cancel { id: u64 },
@@ -308,6 +312,9 @@ pub struct RenderRequest {
     /// The buffer contents, one entry per line, without line terminators.
     #[serde(default)]
     pub lines: Vec<String>,
+    /// Opt in to acknowledgements of bounded input snapshots.
+    #[serde(default)]
+    pub remember_source: bool,
     /// Total columns available in the preview window.
     #[serde(default = "default_width")]
     pub width: usize,
@@ -324,6 +331,17 @@ pub struct RenderRequest {
     /// daemon then answers in full and starts the session over.
     #[serde(default)]
     pub incremental: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RenderDeltaRequest {
+    #[serde(flatten)]
+    pub render: RenderRequest,
+    pub base: u64,
+    /// Zero-based source-line splice; it may append at len when del == 0.
+    pub from: usize,
+    pub del: usize,
+    pub insert: Vec<String>,
 }
 
 fn default_width() -> usize {
@@ -415,6 +433,10 @@ pub enum Event {
     },
     #[serde(rename = "render_result")]
     RenderResult(Box<RenderResult>),
+    /// No exact retained input revision, or a splice outside its bounds.
+    /// No render state was changed; retry once with the whole source.
+    #[serde(rename = "render_source_missing")]
+    RenderSourceMissing { id: u64 },
     /// The answer to `format_table`: replace source lines `from`..=`to` with
     /// `lines`.  `from` is 0 when the cursor was not in a table, which is a
     /// perfectly ordinary thing for a user to ask and not an error.
@@ -503,6 +525,9 @@ pub struct LintItem {
 #[derive(Debug, Serialize)]
 pub struct RenderResult {
     pub id: u64,
+    /// Present only when this daemon retained the exact input under id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_rev: Option<u64>,
     /// Echoed back so a late reply for a stale window size can be discarded.
     pub width: usize,
     /// Rows the document has after this render.  The client checks its buffer

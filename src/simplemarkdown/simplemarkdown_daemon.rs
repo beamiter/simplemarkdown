@@ -18,6 +18,7 @@ mod outline;
 mod protocol;
 mod render;
 mod serve;
+mod source_delta;
 mod table;
 
 use protocol::{
@@ -65,6 +66,7 @@ fn capabilities() -> BTreeMap<&'static str, bool> {
         ("syntax", true),
         ("ascii", true),
         ("incremental", true),
+        ("render_source_delta", true),
         ("blocks", true),
         ("format", true),
         ("edit", true),
@@ -87,6 +89,7 @@ struct Session {
     /// Fingerprints of the three whole-document indexes this session was last
     /// sent, so an unchanged one can be left out of the next reply.
     indexes: Indexes,
+    source: Option<Arc<source_delta::Snapshot>>,
 }
 
 /// The outline, the link spans and the block index, by fingerprint.
@@ -758,7 +761,21 @@ async fn serve() -> std::io::Result<()> {
             Request::Html(request) => {
                 tokio::spawn(html_once(*request, out_tx.clone()));
             }
-            Request::Render(request) => {
+            render_request @ (Request::Render(_) | Request::RenderDelta(_)) => {
+                let (request, splice) = match render_request {
+                    Request::Render(full) => (*full, None),
+                    Request::RenderDelta(delta) => {
+                        let protocol::RenderDeltaRequest {
+                            render,
+                            base,
+                            from,
+                            del,
+                            insert,
+                        } = *delta;
+                        (render, Some((base, from, del, insert)))
+                    }
+                    _ => unreachable!(),
+                };
                 let tx = out_tx.clone();
                 let cancelled = cancelled.clone();
                 let sessions = sessions.clone();
@@ -772,7 +789,33 @@ async fn serve() -> std::io::Result<()> {
                     let opts = request.opts.clone();
                     let key = request.session.clone();
                     let incremental = request.incremental && !key.is_empty();
-                    let source = request.lines.join("\n");
+                    let mut source_rev = None;
+                    let delta_base = splice.as_ref().map(|(base, ..)| *base);
+                    let (source, snapshot) = if let Some((base, from, del, insert)) = splice {
+                        let cached = if key.is_empty() || !request.lines.is_empty() {
+                            None
+                        } else {
+                            sessions
+                                .lock()
+                                .await
+                                .get(&key)
+                                .and_then(|view| view.source.clone())
+                        };
+                        let Some(patched) =
+                            cached.and_then(|cached| cached.splice(id, base, from, del, insert))
+                        else {
+                            send(&tx, Event::RenderSourceMissing { id }).await;
+                            return;
+                        };
+                        (patched.lines().join("\n"), Some(Arc::new(patched)))
+                    } else {
+                        let source = request.lines.join("\n");
+                        let snapshot = (request.remember_source && !key.is_empty())
+                            .then(|| source_delta::Snapshot::retain(id, request.lines))
+                            .flatten()
+                            .map(Arc::new);
+                        (source, snapshot)
+                    };
 
                     // Rendering a long document with syntax highlighting is
                     // CPU-bound for tens of milliseconds; keeping it off the
@@ -816,7 +859,9 @@ async fn serve() -> std::io::Result<()> {
                         false => {
                             let mut sessions = sessions.lock().await;
                             if let Some(session) = sessions.get(&key)
-                                && session.id > id
+                                && (session.id > id
+                                    || (session.id == id
+                                        && (session.source.is_some() || snapshot.is_some())))
                             {
                                 // A newer render for this window has already
                                 // been answered; this one describes a document
@@ -828,15 +873,16 @@ async fn serve() -> std::io::Result<()> {
                             // the document is cheaper for the client to take as
                             // a plain buffer replace.
                             let full_size = wire_size(&output.lines);
-                            let patch = incremental
+                            let previous = incremental
                                 .then(|| sessions.get(&key))
                                 .flatten()
-                                .map(|session| diff(&session.rows, &output.lines))
+                                // New input deltas also qualify the output patch.
+                                // If another render won meanwhile, send full rows.
+                                .filter(|view| delta_base.is_none_or(|base| view.id == base));
+                            let patch = previous
+                                .map(|view| diff(&view.rows, &output.lines))
                                 .filter(|patch| patch_size(patch) * 2 <= full_size);
-                            let sent = incremental
-                                .then(|| sessions.get(&key))
-                                .flatten()
-                                .map_or(Indexes::default(), |session| session.indexes);
+                            let sent = previous.map_or(Indexes::default(), |view| view.indexes);
                             carry = Carry {
                                 toc: sent.toc != indexes.toc,
                                 links: sent.links != indexes.links,
@@ -848,12 +894,28 @@ async fn serve() -> std::io::Result<()> {
                             {
                                 sessions.remove(&evict);
                             }
+                            if snapshot.is_some()
+                                && !sessions.get(&key).is_some_and(|view| view.source.is_some())
+                                && sessions
+                                    .values()
+                                    .filter(|view| view.source.is_some())
+                                    .count()
+                                    >= source_delta::CACHE_ENTRIES
+                                && let Some(oldest) = sessions
+                                    .values_mut()
+                                    .filter(|view| view.source.is_some())
+                                    .min_by_key(|view| view.id)
+                            {
+                                oldest.source = None;
+                            }
+                            source_rev = snapshot.as_ref().map(|source| source.revision());
                             sessions.insert(
                                 key.clone(),
                                 Session {
                                     id,
                                     rows: output.lines.clone(),
                                     indexes,
+                                    source: snapshot,
                                 },
                             );
                             match patch {
@@ -867,6 +929,7 @@ async fn serve() -> std::io::Result<()> {
                         &tx,
                         Event::RenderResult(Box::new(RenderResult {
                             id,
+                            source_rev,
                             width,
                             total,
                             src_sum,
@@ -1718,6 +1781,7 @@ mod tests {
         let src_sum = output.lines.iter().map(|line| u64::from(line.src)).sum();
         let event = Event::RenderResult(Box::new(RenderResult {
             id: 1,
+            source_rev: None,
             width: 20,
             total,
             src_sum,
@@ -1735,6 +1799,7 @@ mod tests {
         // A full reply carries no patch key at all, so the client can branch
         // on its presence rather than on a null.
         assert!(!encoded.contains(r#""patch""#), "{encoded}");
+        assert!(!encoded.contains(r#""source_rev""#), "{encoded}");
     }
 
     /// The client's side of a patch, in the same two steps Vim takes: splice
@@ -1904,6 +1969,7 @@ mod tests {
                     id,
                     rows: Vec::new(),
                     indexes: Indexes::default(),
+                    source: None,
                 },
             );
         }
