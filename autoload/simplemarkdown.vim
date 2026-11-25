@@ -3719,18 +3719,27 @@ def SourceToc()
     return
   endif
   var winid = win_getid()
-  if !RequestOutline(buf, (entries) => ShowSourceToc(buf, winid, entries))
+  var tick = b:changedtick
+  if !RequestOutline(buf, (entries) => ShowSourceToc(buf, winid, tick, entries))
     Warn('the backend cannot list this document''s headings.')
   endif
 enddef
 
 
-def ShowSourceToc(buf: number, winid: number, entries: list<any>)
-  if empty(entries)
-    Warn('no headings in this document.')
+# The async outline and the eventual menu choice both belong to the source
+# revision in the original window, not whichever document has taken it over.
+def SourceTocCurrent(buf: number, winid: number, tick: number): bool
+  return get(WindowInfo(winid), 'bufnr', -1) == buf
+    && getbufvar(buf, 'changedtick', -1) == tick
+enddef
+
+
+def ShowSourceToc(buf: number, winid: number, tick: number, entries: list<any>)
+  if !SourceTocCurrent(buf, winid, tick)
     return
   endif
-  if !WindowExists(winid)
+  if empty(entries)
+    Warn('no headings in this document.')
     return
   endif
   var items: list<string> = []
@@ -3754,14 +3763,16 @@ def ShowSourceToc(buf: number, winid: number, entries: list<any>)
     border: [],
     maxheight: max([5, &lines - 8]),
     callback: (_, index) => {
-      if index <= 0 || !WindowExists(winid)
+      if index <= 0 || !SourceTocCurrent(buf, winid, tick)
         return
       endif
       var entry = get(entries, index - 1, {})
       if empty(entry)
         return
       endif
-      win_gotoid(winid)
+      if !win_gotoid(winid) || !SourceTocCurrent(buf, winid, tick)
+        return
+      endif
       cursor(get(entry, 'src', 1), 1)
       normal! zz
     },

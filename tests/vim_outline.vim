@@ -171,6 +171,47 @@ call popup_close(s:popup, 3)
 call assert_equal(13, line('.'), 'choosing a heading jumps to it in the source')
 call assert_equal(s:src_win, win_getid(), 'in the window the command was run from')
 
+" A pending result must not open a menu for an outdated source revision,
+" even if the same buffer still occupies the window.
+let s:main_buf = bufnr('%')
+let s:race_doc = tempname() .. '.md'
+call writefile(['# Retired', '', 'body', '## Retired child'], s:race_doc)
+execute 'noautocmd edit ' .. fnameescape(s:race_doc)
+noautocmd setlocal filetype=markdown
+let s:race_tick = b:changedtick
+SimpleMarkdownToc
+call append(0, 'new preface')
+call assert_true(s:Wait('get(b:, "simplemarkdown_outline_tick", -1) == s:race_tick', 5000),
+      \ 'the requested old outline actually reached Vim')
+call assert_equal([], popup_list(), 'old outline must not make a new popup')
+call popup_clear()
+
+" A menu that was current when shown cannot jump after the source changes.
+SimpleMarkdownToc
+call assert_true(s:Wait('!empty(popup_list())', 5000), 'fresh outline opens')
+let s:fresh = get(popup_list(), 0, -1)
+call append(0, 'another preface')
+call cursor(1, 1)
+if s:fresh > 0
+  call popup_close(s:fresh, 2)
+endif
+call assert_equal(1, line('.'), 'a menu for the previous revision cannot jump')
+
+" Even at the same tick, a menu cannot move the cursor in a different
+" buffer that has since taken over the original window.
+SimpleMarkdownToc
+call assert_true(s:Wait('!empty(popup_list())', 5000), 'new source menu opens')
+let s:old_menu = get(popup_list(), 0, -1)
+execute 'noautocmd hide buffer ' .. s:main_buf
+call cursor(1, 1)
+if s:old_menu > 0
+  call popup_close(s:old_menu, 2)
+endif
+call assert_equal(s:main_buf, bufnr('%'))
+call assert_equal(1, line('.'), 'menu cannot move a replacement buffer cursor')
+execute 'bwipeout! ' .. bufnr(s:race_doc)
+call delete(s:race_doc)
+
 " ---------------------------------------------------- one request per pause ---
 
 " What folding costs.  EnsureOutline() answers foldexpr from a buffer variable,
