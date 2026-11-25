@@ -235,6 +235,7 @@ test-lint: build
 # test closes them and asks the window what it did.
 test-outline: build
 	vim -Nu NONE -n -i NONE -es -S tests/vim_outline.vim
+	vim -Nu NONE -n -i NONE -es -S tests/vim_preview_toc.vim
 
 # Version skew: a plugin updated without its daemon rebuilt.  `check-protocol`
 # above proves the three declarations agree; this proves what happens when they

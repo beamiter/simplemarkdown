@@ -3464,6 +3464,20 @@ export def NextHeading(direction: number)
 enddef
 
 
+# A popup's indices belong to the render that supplied its labels.  Checking
+# only the current map would still accept an old index after a successful
+# repaint, including when this preview has started following another buffer.
+def PreviewTocStamp(session: dict<any>): list<number>
+  if !SourceMapCurrent(session)
+    || get(WindowInfo(session.src_winid), 'bufnr', 0) != session.src_bufnr
+    || get(WindowInfo(session.winid), 'bufnr', 0) != session.bufnr
+    return []
+  endif
+  return [session.winid, session.bufnr, session.src_winid, session.src_bufnr,
+    session.src_map_changedtick, session.src_map_generation]
+enddef
+
+
 export def Toc()
   var key = CurrentPreviewSession()
   if key ==# '' || !has_key(sessions, key) || empty(get(sessions[key], 'toc', []))
@@ -3498,23 +3512,30 @@ export def Toc()
     return
   endif
 
+  var stamp = PreviewTocStamp(session)
+  if empty(stamp)
+    return
+  endif
   popup_menu(items, {
     title: ' Contents ',
     padding: [0, 1, 0, 1],
     border: [],
     maxheight: max([5, &lines - 8]),
     callback: (_, index) => {
-      TocChosen(key, index)
+      TocChosen(key, stamp, index)
     },
   })
 enddef
 
 
-def TocChosen(key: string, index: number)
+def TocChosen(key: string, stamp: list<number>, index: number)
   if index <= 0 || !has_key(sessions, key)
     return
   endif
   var session = sessions[key]
+  if PreviewTocStamp(session) != stamp
+    return
+  endif
   var entry = get(session.toc, index - 1, {})
   if empty(entry)
     return
